@@ -1,0 +1,12 @@
+# Ignore all data files
+data/raw/
+data/derived/
+*.tif
+*.gpkg
+*.csv
+
+# Ignore R system files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
