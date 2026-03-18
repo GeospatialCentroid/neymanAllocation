@@ -151,3 +151,101 @@ for (m_id in mlra_ids) {
     message(paste("   Saved results to:", out_file))
   }
 }
+library(dplyr)
+library(ggplot2)
+
+#' Plot Stable Sample Size with Buffer
+#'
+#' @param sim_data The final output dataframe from your simulation script.
+#' @param target_mlras A character or numeric vector of exactly 3 MLRA IDs to visualize.
+#' @param buffer An integer value to add to the first passing sample size (default: 500).
+#' @return A list containing the ggplot object and the summarized data.
+plot_buffered_sample_size <- function(
+  sim_data,
+  target_mlras,
+  buffer = 500
+) {
+  # 1. Filter to the specific 3 MLRAs
+  filtered_data <- sim_data %>%
+    dplyr::filter(MLRA %in% target_mlras)
+
+  if (nrow(filtered_data) == 0) {
+    stop("None of the target MLRAs were found in the dataset.")
+  }
+
+  # 2. Find the FIRST pass and add the buffer
+  stable_n_df <- filtered_data %>%
+    dplyr::filter(Passed_Both == TRUE) %>%
+    dplyr::group_by(MLRA, year) %>%
+    dplyr::arrange(Sample_N, .by_group = TRUE) %>%
+    # Slice the very first time Passed_Both is TRUE
+    dplyr::slice_head(n = 1) %>%
+    dplyr::ungroup() %>%
+    # Add the buffer (500) to that initial collection point
+    dplyr::mutate(Stable_Sample_N = Sample_N + buffer) %>%
+    # Keep the original pass number for your reference
+    dplyr::select(MLRA, year, Original_Pass_N = Sample_N, Stable_Sample_N)
+
+  # 3. Warn if any MLRA/Year combination failed to ever pass
+  expected_combos <- length(unique(filtered_data$MLRA)) *
+    length(unique(filtered_data$year))
+  if (nrow(stable_n_df) < expected_combos) {
+    warning(
+      "Some MLRA/Year combinations never achieved a passing condition and are excluded from the plot."
+    )
+  }
+
+  # 4. Generate the Visualization
+  p <- ggplot(
+    stable_n_df,
+    aes(x = factor(year), y = Stable_Sample_N, fill = factor(MLRA))
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7,
+      color = "black",
+      alpha = 0.85
+    ) +
+    # Using viridis for a clean, accessible, modern look
+    scale_fill_viridis_d(
+      name = "MLRA",
+      option = "mako",
+      begin = 0.2,
+      end = 0.8
+    ) +
+    theme_minimal(base_size = 14) +
+    labs(
+      title = "Required Sample Size",
+      x = "Simulation Year",
+      y = "Buffered Sample Size (N)"
+    ) +
+    theme(
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      plot.title = element_text(face = "bold")
+    )
+
+  # Return both the plot and the underlying calculation so you can inspect the raw numbers
+  return(list(plot = p, data = stable_n_df))
+}
+
+
+# Define the 3 MLRAs you want to look at (replace with your actual IDs)
+my_mlras <- c("78", "86", "150")
+sim_results <- list.files(OUTPUT_SIM_DIR, full.names = TRUE) |>
+  readr::read_csv() |>
+  dplyr::bind_rows()
+# final_sim_df <- read.csv(file.path(OUTPUT_SIM_DIR, paste0("MLRA_", m_id, output_suffix)))
+# Run the function
+results <- plot_buffered_sample_size(
+  sim_data = sim_results,
+  target_mlras = my_mlras,
+  buffer = 500
+)
+
+# Display the plot
+print(results$plot)
+
+# View the exact stability numbers
+print(results$data)

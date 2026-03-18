@@ -144,3 +144,139 @@ for (m_id in mlra_ids) {
 }
 
 message("\nDynamic UNET processing complete.")
+
+
+# ==============================================================================
+# --- 4. SUMMARY & VISUALIZATION -----------------------------------------------
+# ==============================================================================
+
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+#' Calculate, Plot, and Export TOF Summaries
+#'
+#' @param data_dir Directory containing the UNET master datasets.
+#' @param plot_mlras Character vector of MLRA IDs to include in the plot.
+#' @param save_outputs Logical; whether to save the results to disk (default: TRUE).
+#' @return A list containing the summary table and the ggplot object.
+summarize_and_plot_tof <- function(
+  data_dir = OUTPUT_DYNAMIC_DIR,
+  plot_mlras = c("78", "86", "150"),
+  save_outputs = TRUE
+) {
+  message("\n--- Generating TOF Summary Table and Plot ---")
+
+  # 1. Locate all dynamic datasets
+  files <- list.files(
+    data_dir,
+    pattern = "_UNET_master_dataset\\.csv$",
+    full.names = TRUE
+  )
+
+  if (length(files) == 0) {
+    stop("No dataset files found in the specified directory.")
+  }
+
+  # 2. Read and combine all files
+  df_all <- lapply(files, readr::read_csv, show_col_types = FALSE) %>%
+    dplyr::bind_rows()
+
+  if (!"TOF" %in% names(df_all)) {
+    stop("Column 'TOF' not found. Check the pivot logic in Step 3.")
+  }
+
+  # 3. Calculate Weighted Mean and Variance
+  summary_table <- df_all %>%
+    dplyr::filter(!is.na(TOF), !is.na(grid_area)) %>%
+    dplyr::group_by(MLRA_ID, year) %>%
+    dplyr::summarise(
+      Grid_Count = dplyr::n(),
+      Weighted_Mean_TOF = weighted.mean(TOF, w = grid_area, na.rm = TRUE),
+      # Calculate weighted population variance
+      Weighted_Var_TOF = sd(TOF),
+      .groups = "drop"
+    )
+
+  # 4. Filter data specifically for the plot
+  plot_data <- summary_table %>%
+    dplyr::filter(MLRA_ID %in% plot_mlras)
+
+  if (nrow(plot_data) == 0) {
+    warning("None of the specified MLRAs for plotting were found in the data.")
+    p <- NULL
+  } else {
+    # 5. Generate the Visualization
+    p <- ggplot(
+      plot_data,
+      aes(x = factor(year), y = Weighted_Mean_TOF, fill = factor(MLRA_ID))
+    ) +
+      geom_col(
+        position = position_dodge(width = 0.8),
+        width = 0.7,
+        color = "black",
+        alpha = 0.85
+      ) +
+      geom_errorbar(
+        aes(
+          ymin = pmax(0, Weighted_Mean_TOF - sqrt(Weighted_Var_TOF)),
+          ymax = Weighted_Mean_TOF + sqrt(Weighted_Var_TOF)
+        ),
+        position = position_dodge(width = 0.8),
+        width = 0.25,
+        alpha = 0.7
+      ) +
+      scale_fill_viridis_d(
+        name = "MLRA",
+        option = "mako",
+        begin = 0.2,
+        end = 0.8
+      ) +
+      theme_minimal(base_size = 14) +
+      labs(
+        title = "Weighted Mean TOF by Year and MLRA",
+        subtitle = "Error bars represent ±1 Standard Deviation",
+        x = "Year",
+        y = "Weighted Mean TOF (%)"
+      ) +
+      theme(
+        legend.position = "bottom",
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        plot.title = element_text(face = "bold")
+      )
+  }
+
+  # 6. Export Results to Disk
+  if (save_outputs) {
+    out_csv <- file.path(data_dir, "UNET_TOF_Summary_Table.csv")
+    readr::write_csv(summary_table, out_csv)
+    message(paste("   Saved summary table to:", out_csv))
+
+    if (!is.null(p)) {
+      out_png <- file.path(data_dir, "UNET_TOF_Summary_Plot.png")
+      ggplot2::ggsave(
+        filename = out_png,
+        plot = p,
+        width = 10, # Standard wide format
+        height = 6,
+        dpi = 300, # High resolution for presentations/reports
+        bg = "white" # Prevents transparent backgrounds
+      )
+      message(paste("   Saved summary plot to:", out_png))
+    }
+  }
+
+  return(list(table = summary_table, plot = p))
+}
+
+# --- Execute the Summary Function ---
+# This will run automatically and save outputs to your DERIVED_DIR/dynamic_attributes_unet
+tof_results <- summarize_and_plot_tof(
+  data_dir = OUTPUT_DYNAMIC_DIR,
+  plot_mlras = c("78", "86", "150"),
+  save_outputs = TRUE
+)
+
+# Optional: Print to console during execution
+print(tof_results$plot)

@@ -52,7 +52,7 @@ ACCURACY_PASS_RATE <- 0.80
 COVERAGE_PASS_RATE <- 0.90
 AREA_COL <- "grid_area"
 
-# --- 2. EXTRACT TOF FROM RAW TILES --------------------------------------------
+# --- 2. EXTRACT TOF FROM RAW TILES & CACHE ------------------------------------
 message(paste("\n--- Processing Novel MLRA:", NOVEL_MLRA_ID, "---"))
 
 if (!file.exists(STATIC_ATTR_FILE)) {
@@ -60,58 +60,76 @@ if (!file.exists(STATIC_ATTR_FILE)) {
 }
 static_df <- readr::read_csv(STATIC_ATTR_FILE, show_col_types = FALSE)
 
-# Fix NLCD Column Names (Strips 'y2020_' prefix so 'y2020_Forest' becomes 'Forest')
+# Fix NLCD Column Names (Strips 'y2020_' prefix)
 static_df <- static_df %>%
   dplyr::rename_with(~ gsub(paste0("^y", TARGET_YEAR, "_"), "", .x))
 
-# Find all TIF tiles
-tiles <- list.files(RAW_TILES_DIR, pattern = "\\.tif$", full.names = TRUE)
-if (length(tiles) == 0) {
-  stop("No TIF tiles found in: ", RAW_TILES_DIR)
-}
-
-message(sprintf(
-  "Found %d tiles. Building Virtual Raster (VRT)...",
-  length(tiles)
-))
-vrt_path <- file.path(RAW_TILES_DIR, "temp_mosaic.vrt")
-vrt <- terra::vrt(tiles, vrt_path, overwrite = TRUE)
-
-# Load 1km Grids for this MLRA
-grid_1km <- terra::vect(STATIC_INPUTS$grid_1km)
-mlra_grids_sf <- sf::st_as_sf(grid_1km[grid_1km$MLRA_ID == NOVEL_MLRA_ID, ])
-
-# PERFORMANCE FIX: Force polygons to match Raster CRS exactly before extracting
-raster_crs <- terra::crs(vrt)
-if (sf::st_crs(mlra_grids_sf) != sf::st_crs(raster_crs)) {
-  message("Aligning CRS of grids to match 1-meter rasters for maximum speed...")
-  mlra_grids_sf <- sf::st_transform(mlra_grids_sf, raster_crs)
-}
-
-message(
-  "Extracting TOF coverage to 1km grids (This should be much faster now)..."
-)
-# ASSUMPTION: Tiles are binary (1 = TOF, 0 = Non-TOF)
-extracted_frac <- exactextractr::exact_extract(
-  vrt,
-  mlra_grids_sf,
-  fun = "mean",
-  progress = TRUE
+# Define Cache File Path
+CACHE_FILE <- file.path(
+  OUTPUT_DIR,
+  paste0("MLRA_", NOVEL_MLRA_ID, "_TOF_cache.csv")
 )
 
-# Clean up temporary VRT
-if (file.exists(vrt_path)) {
-  file.remove(vrt_path)
-}
+if (file.exists(CACHE_FILE)) {
+  message(
+    "--> Cache found! Loading extracted TOF directly (Skipping VRT extraction)..."
+  )
+  df_mlra <- readr::read_csv(CACHE_FILE, show_col_types = FALSE)
+} else {
+  message("--> No cache found. Beginning heavy extraction...")
 
-# Build the temporary Master Dataset
-df_mlra <- static_df %>%
-  dplyr::mutate(
-    id = mlra_grids_sf$id,
-    year = TARGET_YEAR,
-    TOF = extracted_frac * 100
-  ) %>%
-  dplyr::filter(!is.na(TOF))
+  # Find all TIF tiles
+  tiles <- list.files(RAW_TILES_DIR, pattern = "\\.tif$", full.names = TRUE)
+  if (length(tiles) == 0) {
+    stop("No TIF tiles found in: ", RAW_TILES_DIR)
+  }
+
+  message(sprintf(
+    "Found %d tiles. Building Virtual Raster (VRT)...",
+    length(tiles)
+  ))
+  vrt_path <- file.path(RAW_TILES_DIR, "temp_mosaic.vrt")
+  vrt <- terra::vrt(tiles, vrt_path, overwrite = TRUE)
+
+  # Load 1km Grids for this MLRA
+  grid_1km <- terra::vect(STATIC_INPUTS$grid_1km)
+  mlra_grids_sf <- sf::st_as_sf(grid_1km[grid_1km$MLRA_ID == NOVEL_MLRA_ID, ])
+
+  # Force polygons to match Raster CRS exactly before extracting
+  raster_crs <- terra::crs(vrt)
+  if (sf::st_crs(mlra_grids_sf) != sf::st_crs(raster_crs)) {
+    message(
+      "Aligning CRS of grids to match 1-meter rasters for maximum speed..."
+    )
+    mlra_grids_sf <- sf::st_transform(mlra_grids_sf, raster_crs)
+  }
+
+  message("Extracting TOF coverage to 1km grids (This may take a while)...")
+  extracted_frac <- exactextractr::exact_extract(
+    vrt,
+    mlra_grids_sf,
+    fun = "mean",
+    progress = TRUE
+  )
+
+  # Clean up temporary VRT
+  if (file.exists(vrt_path)) {
+    file.remove(vrt_path)
+  }
+
+  # Build the temporary Master Dataset
+  df_mlra <- static_df %>%
+    dplyr::mutate(
+      id = mlra_grids_sf$id,
+      year = TARGET_YEAR,
+      TOF = extracted_frac * 100
+    ) %>%
+    dplyr::filter(!is.na(TOF))
+
+  # Save to cache so we never have to do this again
+  message("Saving extraction results to cache for future runs...")
+  readr::write_csv(df_mlra, CACHE_FILE)
+}
 
 
 # --- 3. DETERMINE TARGET NEYMAN CLASS -----------------------------------------
