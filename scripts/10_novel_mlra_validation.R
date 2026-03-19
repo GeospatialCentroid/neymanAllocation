@@ -309,3 +309,80 @@ report <- data.frame(
 readr::write_csv(report, out_report_file)
 message("\nValidation complete! Results saved to: ", out_report_file)
 print(report)
+
+# --- 7. VISUALIZE SIMULATION DISTRIBUTION -------------------------------------
+library(ggplot2)
+
+message("Generating Simulation Distribution Plot...")
+
+# 1. Prepare data for plotting
+sim_df <- data.frame(Sample_Mean = sim_estimates)
+lower_bound <- TRUE_MEAN - TOLERANCE_VAL
+upper_bound <- TRUE_MEAN + TOLERANCE_VAL
+
+# 2. Build the Plot
+p_sim <- ggplot(sim_df, aes(x = Sample_Mean)) +
+  # Draw the histogram of the 100 simulated draws
+  geom_histogram(
+    fill = "#2C7FB8",
+    color = "white",
+    bins = 15,
+    alpha = 0.85
+  ) +
+
+  # Highlight the True Mean (The Bullseye)
+  geom_vline(
+    aes(xintercept = TRUE_MEAN, color = "True Mean"),
+    linewidth = 1.5
+  ) +
+
+  # Highlight the +/- 10% Target Accuracy Zone
+  geom_vline(
+    aes(xintercept = lower_bound, color = "10% Tolerance Bound"),
+    linetype = "dashed",
+    linewidth = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = upper_bound, color = "10% Tolerance Bound"),
+    linetype = "dashed",
+    linewidth = 1.2
+  ) +
+
+  # Set colors for the lines
+  scale_color_manual(
+    name = "",
+    values = c("True Mean" = "black", "10% Tolerance Bound" = "#E31A1C")
+  ) +
+
+  # Presentation formatting
+  labs(
+    title = sprintf(
+      "Validation on Novel MLRA %s: Simulation Results",
+      NOVEL_MLRA_ID
+    ),
+    subtitle = sprintf(
+      "100 simulated samples using %s allocation budget (n = %d)",
+      target_class,
+      target_budget
+    ),
+    x = "Estimated TOF Percentage",
+    y = "Number of Simulations"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(color = "gray40", size = 14),
+    panel.grid.minor = element_blank()
+  )
+
+# Print to viewer
+print(p_sim)
+
+# Optional: Save for your presentation deck
+plot_file <- file.path(
+  OUTPUT_DIR,
+  paste0("MLRA_", NOVEL_MLRA_ID, "_Simulation_Plot.png")
+)
+ggsave(plot_file, p_sim, width = 10, height = 6, dpi = 300)
+message("Plot saved to: ", plot_file)

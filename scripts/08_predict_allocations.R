@@ -205,3 +205,10 @@ message(
   "\nPrediction complete. All sampling guides have been generated in: ",
   OUTPUT_DIR
 )
+
+
+# Define the 3 MLRAs you want to look at (replace with your actual IDs)
+my_mlras <- c("78", "86", "150")
+sim_results <- list.files(OUTPUT_DIR, full.names = TRUE) |>
+  readr::read_csv() |>
+  dplyr::bind_rows()

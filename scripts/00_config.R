@@ -47,6 +47,7 @@ if (PROCESSING_EXTENT == "NEBRASKA") {
 
     # Hardcoded Nebraska MLRAs
     ALL_MLRA_IDS <- c(
+        "63",
         "72",
         "77",
         "78",
@@ -59,7 +60,8 @@ if (PROCESSING_EXTENT == "NEBRASKA") {
         "89",
         "90",
         "142",
-        "144A"
+        "146",
+        "150"
     )
 
     message("--> Config Loaded: Operating in NEBRASKA mode")
