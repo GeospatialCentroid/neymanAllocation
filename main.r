@@ -25,7 +25,7 @@ RUN_01_STATIC_PROCESSING <- TRUE # Process base NLCD/Grid data
 RUN_02_DYNAMIC_PROCESSING <- FALSE # Extract TOF from model tiles
 RUN_03_STRATIFICATION_TESTING <- FALSE # Evaluate all stratification methods
 RUN_04_BASELINE_SAMPLING <- FALSE # SRS baseline testing
-RUN_04_ITERATIVE_SAMPLING <- FALSE # (Optional) Detailed Neyman testing
+# RUN_04_ITERATIVE_SAMPLING <- FALSE # (Optional) Detailed Neyman testing
 RUN_05_GATHER_RESULTS <- FALSE # Calculate Sample Budgets
 RUN_06_MLRA_GROUPING <- FALSE # Apply hierarchical logic for pooling
 RUN_07_VARIANCE_PROFILING <- FALSE # Generate Universal Variance Profiles
