@@ -1,6 +1,6 @@
 # ==============================================================================
-# 04_random_sampling_test.R (Weighted Version)
-# Purpose: Baseline Stress-Test using Simple Random Sampling (SRS) for all years.
+# 05_systematic_sampling_test.R (Weighted Version)
+# Purpose: Stress-Test using Systematic Grid Sampling for all years.
 # ==============================================================================
 
 source("scripts/00_config.R")
@@ -13,14 +13,14 @@ if (USE_UNET) {
   INPUT_DYNAMIC_DIR <- file.path(DERIVED_DIR, "dynamic_attributes_unet")
   OUTPUT_SIM_DIR <- file.path(DERIVED_DIR, "simulation_results_unet")
   input_suffix <- "_UNET_master_dataset.csv"
-  output_suffix <- "_baseline_weighted_results_unet.csv"
-  method_name <- "BASELINE_SRS_WEIGHTED_UNET"
+  output_suffix <- "_systematic_weighted_results_unet.csv"
+  method_name <- "SYSTEMATIC_WEIGHTED_UNET"
 } else {
   INPUT_DYNAMIC_DIR <- file.path(DERIVED_DIR, "dynamic_attributes")
   OUTPUT_SIM_DIR <- file.path(DERIVED_DIR, "simulation_results")
   input_suffix <- "_master_dataset.csv"
-  output_suffix <- "_baseline_weighted_results.csv"
-  method_name <- "BASELINE_SRS_WEIGHTED"
+  output_suffix <- "_systematic_weighted_results.csv"
+  method_name <- "SYSTEMATIC_WEIGHTED"
 }
 
 if (!dir.exists(OUTPUT_SIM_DIR)) {
@@ -32,11 +32,36 @@ SAMPLE_STEP <- 50
 ACCURACY_TOLERANCE <- 0.10
 ACCURACY_PASS_RATE_80 <- 0.80
 ACCURACY_PASS_RATE_95 <- 0.95
-COVERAGE_PASS_RATE_95 <- 0.95 # Added for 95% CI Coverage
+COVERAGE_PASS_RATE_95 <- 0.95
 AREA_COL <- "grid_area"
 YEARS <- c(2010, 2016, 2020)
 
 # --- 2. HELPER FUNCTIONS ------------------------------------------------------
+
+# Systematic Sampling Implementation
+draw_systematic_sample <- function(df, n_desired) {
+  N_total <- nrow(df)
+
+  # If we request more samples than population, return the whole population
+  if (n_desired >= N_total) {
+    return(df)
+  }
+
+  # Calculate the fractional step size
+  k <- N_total / n_desired
+
+  # Random initiation location between 1 and the step size
+  start_idx <- runif(1, min = 1, max = k)
+
+  # Generate the sequence of indices
+  indices <- floor(start_idx + (0:(n_desired - 1)) * k)
+
+  # Safety bounds (in case floating point math pushes the last index slightly over)
+  indices[indices > N_total] <- N_total
+  indices[indices < 1] <- 1
+
+  return(df[indices, ])
+}
 
 analyze_weighted_sample <- function(
   sample_df,
@@ -67,7 +92,7 @@ mlra_ids <- if (!is.null(TARGET_MLRA_IDS)) TARGET_MLRA_IDS else ALL_MLRA_IDS
 
 for (m_id in mlra_ids) {
   message(paste0(
-    "\n--- Starting Weighted Random Sampling Baseline: ",
+    "\n--- Starting Systematic Sampling Stress-Test: ",
     m_id,
     " ---"
   ))
@@ -82,6 +107,10 @@ for (m_id in mlra_ids) {
   if (!AREA_COL %in% names(df_full)) {
     stop("Error: Area column not found.")
   }
+
+  # NOTE: To ensure systematic sampling moves left-to-right, top-to-bottom,
+  # the data MUST be spatially sorted here if it isn't already.
+  # Example: df_full <- df_full %>% dplyr::arrange(desc(latitude), longitude)
 
   sim_results_list <- list()
 
@@ -115,8 +144,11 @@ for (m_id in mlra_ids) {
       )
 
       for (r in 1:SIM_REPS) {
+        # The systematic function handles the random seed internally via runif()
+        # but setting it here ensures full reproducibility for each simulation rep
         set.seed(r)
-        drawn_sample <- pop_df %>% dplyr::slice_sample(n = n_total)
+
+        drawn_sample <- draw_systematic_sample(pop_df, n_total)
         est <- analyze_weighted_sample(drawn_sample, TOTAL_POP, AREA_COL)
 
         sim_outcomes$mean_est[r] <- est["mean"]
@@ -181,15 +213,12 @@ plot_mlra_milestones <- function(
   target_mlra,
   buffer = 0
 ) {
-  # 1. Filter to the specific MLRA
   filtered_data <- sim_data %>%
     dplyr::filter(MLRA == target_mlra)
 
   if (nrow(filtered_data) == 0) {
     stop(paste("MLRA", target_mlra, "was not found in the dataset."))
   }
-
-  # 2. Extract the first passing instance for each of the 3 milestones
 
   # Milestone 1: 80% Accuracy
   first_80 <- filtered_data %>%
@@ -221,7 +250,7 @@ plot_mlra_milestones <- function(
     dplyr::mutate(Buffered_Sample_N = Sample_N + buffer) %>%
     dplyr::select(year, Milestone, Original_N = Sample_N, Buffered_Sample_N)
 
-  # 3. Generate the Visualization
+  # Generate the Visualization
   p <- ggplot(
     milestone_df,
     aes(x = factor(year), y = Buffered_Sample_N, fill = Milestone)
@@ -232,7 +261,6 @@ plot_mlra_milestones <- function(
       color = "black",
       alpha = 0.85
     ) +
-    # Using viridis for a clean, accessible, modern look
     scale_fill_viridis_d(
       name = "Milestone Reached",
       option = "mako",
@@ -241,7 +269,10 @@ plot_mlra_milestones <- function(
     ) +
     theme_minimal(base_size = 14) +
     labs(
-      title = paste("Required Sample Size Milestones - MLRA", target_mlra),
+      title = paste(
+        "Systematic Sampling: Required Sample Size Milestones - MLRA",
+        target_mlra
+      ),
       x = "Simulation Year",
       y = if (buffer > 0) {
         paste("Buffered Sample Size (N +", buffer, ")")
@@ -264,11 +295,15 @@ plot_mlra_milestones <- function(
 my_mlra <- "78"
 
 # Note: Handled binding assuming files exist.
-sim_results <- list.files(OUTPUT_SIM_DIR, full.names = TRUE) |>
+sim_results <- list.files(
+  OUTPUT_SIM_DIR,
+  pattern = "systematic_weighted",
+  full.names = TRUE
+) |>
   readr::read_csv(show_col_types = FALSE) |>
   dplyr::bind_rows()
 
-# Run the function (added a buffer of 0 by default, change to 500 if desired)
+# Run the function
 results <- plot_mlra_milestones(
   sim_data = sim_results,
   target_mlra = my_mlra,
