@@ -25,6 +25,8 @@ RUN_01_STATIC_PROCESSING <- TRUE # Process base NLCD/Grid data
 RUN_02_DYNAMIC_PROCESSING <- FALSE # Extract TOF from model tiles
 RUN_03_STRATIFICATION_TESTING <- FALSE # Evaluate all stratification methods
 RUN_04_BASELINE_SAMPLING <- FALSE # SRS baseline testing
+RUN_04b_SYSTEMATIC_SAMPLING <- FALSE # SRS baseline testing
+RUN_04c_COMPARISON_SAMPLING <- FALSE # SRS baseline testing
 # RUN_04_ITERATIVE_SAMPLING <- FALSE # (Optional) Detailed Neyman testing
 RUN_05_GATHER_RESULTS <- FALSE # Calculate Sample Budgets
 RUN_06_MLRA_GROUPING <- FALSE # Apply hierarchical logic for pooling
@@ -61,12 +63,17 @@ if (RUN_03_STRATIFICATION_TESTING) {
 
 if (RUN_04_BASELINE_SAMPLING) {
   message("\n>>> Running 04_random_sampling_test.R")
-  source("scripts/04_random_sampling_test.R")
+  source("scripts/04b_systematic_sampling.R")
 }
 
-if (RUN_04_ITERATIVE_SAMPLING) {
-  message("\n>>> Running 04_iterative_sampling_test.R")
-  source("scripts/04_iterative_sampling_test.R")
+if (RUN_04b_SYSTEMATIC_SAMPLING ) {
+  message("\n>>> Running 04_random_sampling_test.R")
+  source("scripts/04c_compare_sampling_methods.R")
+  
+}
+if (RUN_04c_COMPARISON_SAMPLING) {
+  message("\n>>> Running 04_random_sampling_test.R")
+  source("scripts/04c_compare_sampling_methods.R")
 }
 
 if (RUN_05_GATHER_RESULTS) {
