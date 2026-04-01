@@ -292,7 +292,7 @@ plot_mlra_milestones <- function(
 }
 
 # Example execution: Pick ONE MLRA to visualize
-my_mlra <- "78"
+my_mlra <- "86"
 
 # Note: Handled binding assuming files exist.
 sim_results <- list.files(
@@ -493,7 +493,7 @@ if (file.exists(target_data_path) && file.exists(spatial_grid_path)) {
     df = df_142,
     grid_sf = master_grid_sf,
     mlra_id = target_mlra_id,
-    sample_size = 400,
+    sample_size = 100,
     id_col = "id", # The column name linking the CSV and the Spatial Grid
     gpkg_path = "data/derived/mlra/lower48MLRA.gpkg"
   )
@@ -513,3 +513,4 @@ if (file.exists(target_data_path) && file.exists(spatial_grid_path)) {
 } else {
   message("Data or Spatial Grid not found. Please check your paths.")
 }
+™

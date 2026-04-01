@@ -87,6 +87,9 @@ mlra_aggregated <- all_mlra_data %>%
   )) %>%
   ungroup()
 
+# export 
+write_csv(mlra_aggregated, "temp/mlra_aggregated.csv")
+
 # -------------------------------------------------------------------------
 # 4. LOAD SPATIAL DATA (GPKG) & JOIN
 # -------------------------------------------------------------------------

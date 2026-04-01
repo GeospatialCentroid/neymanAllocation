@@ -274,7 +274,7 @@ plot_systematic_mlra_averages <- function(sim_dir) {
 
 # Note: We assume ALL_MLRA_IDS has been defined by sourcing "scripts/00_config.R".
 # You can test a single MLRA here (ideally one that exists in your config list)
-my_mlra <- "87"
+my_mlra <- "150"
 
 results <- compare_methods(
   sim_dir = OUTPUT_SIM_DIR,
@@ -314,7 +314,7 @@ cat("SENSITIVITY ANALYSIS: EXCLUDING MLRAs 79 & 87\n")
 cat("====================================================================\n")
 
 # Filter out MLRAs 79 and 87 from the combined dataset
-exclude_mlras <- c("79", "87")
+exclude_mlras <- c("79", "87")#"79", "87"
 
 srs_files <- list.files(OUTPUT_SIM_DIR, pattern = srs_pattern, full.names = TRUE)
 sys_files <- list.files(OUTPUT_SIM_DIR, pattern = sys_pattern, full.names = TRUE)
@@ -388,3 +388,4 @@ cat("EFFICIENCY SUMMARY (ALL YEARS COMBINED) - EXCLUDING MLRAs 79 & 87\n")
 cat("====================================================================\n")
 print(as.data.frame(global_stats_filtered$overall))
 cat("====================================================================\n\n")
+

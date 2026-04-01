@@ -7,6 +7,7 @@ source("scripts/00_config.R")
 target_ids <- c(63,89)
 
 s1 <- terra::vect(STATIC_INPUTS$mlra)
+s1$area <- terra::expanse(s1, unit = "km")
 
 # Create a subset of the vector for just those IDs
 # Note: We convert target_ids to numeric because the MLRA_ID column is <num>

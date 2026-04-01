@@ -280,3 +280,174 @@ print(results$plot)
 
 # View the exact stability numbers per milestone
 print(results$data)
+
+
+
+
+# ==============================================================================
+# 4. PRESENTATION MAPPING FUNCTION (Simple Random Sampling)
+# ==============================================================================
+library(sf)
+library(tigris) 
+
+options(tigris_use_cache = TRUE) 
+
+plot_random_map <- function(
+    df,
+    grid_sf,
+    mlra_id,
+    sample_size = 400,
+    id_col = "id",
+    gpkg_path = NULL
+) {
+  
+  # 1. Filter CSV by Year
+  if ("year" %in% names(df)) {
+    target_year <- max(df$year, na.rm = TRUE)
+    plot_df <- df %>% dplyr::filter(year == target_year)
+  } else {
+    plot_df <- df
+  }
+  
+  # 2. Filter Spatial Grid to ONLY the cells that actually exist in the CSV
+  mlra_grid <- grid_sf %>%
+    dplyr::filter(.data[[id_col]] %in% plot_df[[id_col]])
+  
+  # 3. Determine Random Indices (THE MAIN DIFFERENCE)
+  N_total <- nrow(mlra_grid)
+  set.seed(42) # Keep seed fixed so the random map doesn't jitter between presentations
+  
+  if (sample_size >= N_total) {
+    sampled_ids <- mlra_grid[[id_col]]
+  } else {
+    # Perform a simple random sample without replacement
+    sampled_ids <- sample(mlra_grid[[id_col]], size = sample_size, replace = FALSE)
+  }
+  
+  # 4. Assign plotting status
+  mlra_grid <- mlra_grid %>%
+    dplyr::mutate(Sample_Status = dplyr::case_when(
+      .data[[id_col]] %in% sampled_ids ~ "Randomly Selected",
+      TRUE ~ "Present in CSV Data"
+    ))
+  
+  mlra_grid$Sample_Status <- factor(
+    mlra_grid$Sample_Status,
+    levels = c("Present in CSV Data", "Randomly Selected")
+  )
+  
+  # 5. Generate the Map
+  p <- ggplot()
+  
+  # Draw MLRA background and State Line
+  if (!is.null(gpkg_path) && file.exists(gpkg_path)) {
+    mlra_bound <- sf::st_read(gpkg_path, quiet = TRUE) %>%
+      dplyr::filter(MLRA_ID == mlra_id)
+    
+    p <- p + geom_sf(data = mlra_bound, fill = "white", color = "black", linewidth = 0.8)
+    
+    # Fetch Nebraska State Line
+    ne_state <- tigris::states(cb = TRUE, class = "sf", progress_bar = FALSE) %>%
+      dplyr::filter(STUSPS == "NE") %>%
+      sf::st_transform(sf::st_crs(mlra_bound)) 
+    
+    # Convert POLYGON to MULTILINESTRING before cropping
+    ne_state_lines <- sf::st_cast(ne_state, "MULTILINESTRING")
+    
+    # Physically crop the lines to the MLRA's bounding box
+    ne_state_cropped <- suppressWarnings(sf::st_crop(ne_state_lines, sf::st_bbox(mlra_bound)))
+    
+    # Add the cropped state line on top
+    p <- p + geom_sf(
+      data = ne_state_cropped, 
+      fill = NA, 
+      color = "#1f78b4", 
+      linewidth = 1.2, 
+      linetype = "dashed",
+      alpha = 0.8
+    )
+  }
+  
+  # Draw the Grid Cells
+  p <- p +
+    geom_sf(
+      data = mlra_grid,
+      aes(fill = Sample_Status, color = Sample_Status),
+      linewidth = 0.2
+    ) +
+    scale_fill_manual(
+      values = c("Present in CSV Data" = "gray90", "Randomly Selected" = "red")
+    ) +
+    scale_color_manual(
+      values = c("Present in CSV Data" = "gray80", "Randomly Selected" = "darkred")
+    ) +
+    theme_minimal(base_size = 14) +
+    labs(
+      title = paste("Simple Random Sampling - MLRA", mlra_id),
+      subtitle = paste("Sample Size: N =", sample_size, "| Dashed blue line indicates NE boundary."),
+      fill = NULL, color = NULL
+    ) +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(p)
+}
+
+
+# ==============================================================================
+# WORKED EXAMPLE: Rendering the Random Sample Map for MLRA 86
+# ==============================================================================
+
+# Ensure required spatial libraries are loaded
+library(sf)
+library(tigris)
+library(dplyr)
+library(ggplot2)
+
+# 1. Define target parameters
+target_mlra <- "86"
+n_samples <- 400
+
+# 2. Load the Attribute Data (CSV)
+# Assuming INPUT_DYNAMIC_DIR and input_suffix are set from your 00_config.R
+csv_file_path <- file.path(INPUT_DYNAMIC_DIR, paste0("MLRA_", target_mlra, input_suffix))
+mlra_data <- readr::read_csv(csv_file_path, show_col_types = FALSE)
+
+# 3. Load the Spatial Grid Data (sf object)
+# IMPORTANT: Replace this path with the actual file containing your spatial grid cells.
+# This spatial file MUST contain a column that matches the ID column in your CSV.
+grid_file_path <- "data/derived/grids/Nebraska_1km_mlra.gpkg"
+mlra_grid_spatial <- sf::st_read(grid_file_path, quiet = TRUE)
+
+# 4. Define the path to your MLRA boundaries (Optional, but needed to draw the Nebraska line)
+# IMPORTANT: Replace this path with your actual MLRA boundary shapefile or geopackage.
+mlra_boundary_path <- "path/to/your/mlra_boundaries.gpkg"
+
+# 5. Execute the Plotting Function
+# NOTE: Check your data to ensure "id" is the correct linking column. 
+# If your column is named "grid_id" or "UID", change the id_col argument below.
+random_sample_map <- plot_random_map(
+  df = mlra_data,
+  grid_sf = mlra_grid_spatial,
+  mlra_id = target_mlra,
+  sample_size = n_samples,
+  id_col = "id", 
+  gpkg_path = mlra_boundary_path
+)
+
+# 6. Display the Map
+print(random_sample_map)
+
+# 7. (Optional) Save the Map to your output directory
+# ggsave(
+#   filename = file.path(OUTPUT_SIM_DIR, paste0("MLRA_", target_mlra, "_Random_Map.png")),
+#   plot = random_sample_map,
+#   width = 10, 
+#   height = 8, 
+#   dpi = 300,
+#   bg = "white"
+# )
+
