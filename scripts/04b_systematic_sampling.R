@@ -315,3 +315,201 @@ print(results$plot)
 
 # View the exact stability numbers per milestone
 print(results$data)
+
+
+# ==============================================================================
+# 4. PRESENTATION MAPPING FUNCTION (Cropped State Lines)
+# ==============================================================================
+library(sf)
+library(tigris)
+
+options(tigris_use_cache = TRUE)
+
+plot_systematic_map <- function(
+  df,
+  grid_sf,
+  mlra_id,
+  sample_size = 400,
+  id_col = "id",
+  gpkg_path = NULL
+) {
+  # 1. Filter CSV by Year
+  if ("year" %in% names(df)) {
+    target_year <- max(df$year, na.rm = TRUE)
+    plot_df <- df %>% dplyr::filter(year == target_year)
+  } else {
+    plot_df <- df
+  }
+
+  # 2. Filter Spatial Grid to ONLY the cells that actually exist in the CSV
+  mlra_grid <- grid_sf %>%
+    dplyr::filter(.data[[id_col]] %in% plot_df[[id_col]])
+
+  # 3. FORCE TRUE SPATIAL SORTING (Top-to-Bottom, Left-to-Right)
+  centroids <- sf::st_coordinates(sf::st_centroid(mlra_grid))
+  mlra_grid$X_coord <- centroids[, "X"]
+  mlra_grid$Y_coord <- centroids[, "Y"]
+
+  mlra_grid <- mlra_grid %>%
+    dplyr::arrange(desc(Y_coord), X_coord)
+
+  # 4. Determine Systematic Indices
+  N_total <- nrow(mlra_grid)
+  if (sample_size >= N_total) {
+    sampled_ids <- mlra_grid[[id_col]]
+  } else {
+    k <- N_total / sample_size
+    set.seed(42)
+    start_idx <- runif(1, min = 1, max = k)
+    indices <- floor(start_idx + (0:(sample_size - 1)) * k)
+    indices[indices > N_total] <- N_total
+    indices[indices < 1] <- 1
+
+    sampled_ids <- mlra_grid[[id_col]][indices]
+  }
+
+  # 5. Assign plotting status
+  mlra_grid <- mlra_grid %>%
+    dplyr::mutate(
+      Sample_Status = dplyr::case_when(
+        .data[[id_col]] %in% sampled_ids ~ "Systematically Selected",
+        TRUE ~ "Present in CSV Data"
+      )
+    )
+
+  mlra_grid$Sample_Status <- factor(
+    mlra_grid$Sample_Status,
+    levels = c("Present in CSV Data", "Systematically Selected")
+  )
+
+  # 6. Generate the Map
+  p <- ggplot()
+
+  # Draw MLRA background and State Line
+  if (!is.null(gpkg_path) && file.exists(gpkg_path)) {
+    mlra_bound <- sf::st_read(gpkg_path, quiet = TRUE) %>%
+      dplyr::filter(MLRA_ID == mlra_id)
+
+    p <- p +
+      geom_sf(
+        data = mlra_bound,
+        fill = "white",
+        color = "black",
+        linewidth = 0.8
+      )
+
+    # Fetch Nebraska State Line
+    ne_state <- tigris::states(
+      cb = TRUE,
+      class = "sf",
+      progress_bar = FALSE
+    ) %>%
+      dplyr::filter(STUSPS == "NE") %>%
+      sf::st_transform(sf::st_crs(mlra_bound))
+
+    # --- THE FIX: Convert POLYGON to MULTILINESTRING before cropping ---
+    ne_state_lines <- sf::st_cast(ne_state, "MULTILINESTRING")
+
+    # Physically crop the lines to the MLRA's bounding box
+    ne_state_cropped <- suppressWarnings(sf::st_crop(
+      ne_state_lines,
+      sf::st_bbox(mlra_bound)
+    ))
+
+    # Add the cropped state line on top
+    p <- p +
+      geom_sf(
+        data = ne_state_cropped,
+        fill = NA,
+        color = "#1f78b4",
+        linewidth = 1.2,
+        linetype = "dashed",
+        alpha = 0.8
+      )
+  }
+
+  # Draw the Grid Cells
+  p <- p +
+    geom_sf(
+      data = mlra_grid,
+      aes(fill = Sample_Status, color = Sample_Status),
+      linewidth = 0.2
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Present in CSV Data" = "gray90",
+        "Systematically Selected" = "red"
+      )
+    ) +
+    scale_color_manual(
+      values = c(
+        "Present in CSV Data" = "gray80",
+        "Systematically Selected" = "darkred"
+      )
+    ) +
+    theme_minimal(base_size = 14) +
+    labs(
+      title = paste("Systematic Grid Sampling - MLRA", mlra_id),
+      subtitle = paste(
+        "Sample Size: N =",
+        sample_size,
+        "| Dashed blue line indicates NE boundary."
+      ),
+      fill = NULL,
+      color = NULL
+    ) +
+    theme(
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+
+  return(p)
+}
+# ==============================================================================
+# Example Execution: MLRA 142 Presentation Map
+# ==============================================================================
+# (Optional) Uncomment to run directly from the script
+
+target_mlra_id <- 150
+target_data_path <- file.path(
+  INPUT_DYNAMIC_DIR,
+  paste0("MLRA_", target_mlra_id, input_suffix)
+)
+
+# Define the path to your original spatial grid (the "math element")
+# Update this to point to your shapefile, gpkg, or spatial feature class
+spatial_grid_path <- "data/derived/grids/Nebraska_1km_mlra.gpkg"
+
+if (file.exists(target_data_path) && file.exists(spatial_grid_path)) {
+  # Read the CSV
+  df_142 <- readr::read_csv(target_data_path, show_col_types = FALSE)
+
+  # Read the Spatial Grid
+  master_grid_sf <- sf::st_read(spatial_grid_path, quiet = TRUE)
+
+  # Run the mapping function
+  map_plot <- plot_systematic_map(
+    df = df_142,
+    grid_sf = master_grid_sf,
+    mlra_id = target_mlra_id,
+    sample_size = 400,
+    id_col = "id", # The column name linking the CSV and the Spatial Grid
+    gpkg_path = "data/derived/mlra/lower48MLRA.gpkg"
+  )
+
+  # Display map in RStudio Viewer
+  print(map_plot)
+
+  # Save a high-res version for PowerPoint/Reports
+  ggplot2::ggsave(
+    filename = paste0("MLRA_", target_mlra_id, "_Systematic_Map_Polygons.png"),
+    plot = map_plot,
+    width = 10,
+    height = 8,
+    dpi = 300,
+    bg = "white"
+  )
+} else {
+  message("Data or Spatial Grid not found. Please check your paths.")
+}

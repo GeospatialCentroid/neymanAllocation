@@ -306,3 +306,85 @@ cat("====================================================================\n\n")
 # 4. Display the Bar Chart of Average Required Systematic Samples per Target MLRA
 avg_plot <- plot_systematic_mlra_averages(sim_dir = OUTPUT_SIM_DIR)
 print(avg_plot)
+
+# --- 5. SENSITIVITY ANALYSIS: REMOVE MLRA 79 & 87 --------------------------
+
+cat("\n\n====================================================================\n")
+cat("SENSITIVITY ANALYSIS: EXCLUDING MLRAs 79 & 87\n")
+cat("====================================================================\n")
+
+# Filter out MLRAs 79 and 87 from the combined dataset
+exclude_mlras <- c("79", "87")
+
+srs_files <- list.files(OUTPUT_SIM_DIR, pattern = srs_pattern, full.names = TRUE)
+sys_files <- list.files(OUTPUT_SIM_DIR, pattern = sys_pattern, full.names = TRUE)
+
+srs_df_filtered <- readr::read_csv(srs_files, show_col_types = FALSE) %>%
+  dplyr::filter(
+    as.character(MLRA) %in% as.character(ALL_MLRA_IDS),
+    !as.character(MLRA) %in% exclude_mlras
+  )
+
+sys_df_filtered <- readr::read_csv(sys_files, show_col_types = FALSE) %>%
+  dplyr::filter(
+    as.character(MLRA) %in% as.character(ALL_MLRA_IDS),
+    !as.character(MLRA) %in% exclude_mlras
+  )
+
+# Extract milestones for filtered data
+srs_milestones_filtered <- extract_milestones(srs_df_filtered, "Random (SRS)")
+sys_milestones_filtered <- extract_milestones(sys_df_filtered, "Systematic")
+
+combined_df_filtered <- dplyr::bind_rows(srs_milestones_filtered, sys_milestones_filtered)
+
+# Pivot wider and aggregate
+wide_comparison_filtered <- combined_df_filtered %>%
+  tidyr::pivot_wider(
+    names_from = Method,
+    values_from = Required_N
+  )
+
+# Yearly summary (excluding MLRAs 79 & 87)
+yearly_summary_filtered <- wide_comparison_filtered %>%
+  dplyr::group_by(year, Milestone) %>%
+  dplyr::summarize(
+    Mean_SRS_N = round(mean(`Random (SRS)`, na.rm = TRUE), 1),
+    Mean_Sys_N = round(mean(Systematic, na.rm = TRUE), 1),
+    SD_Systematic = round(sd(Systematic, na.rm = TRUE), 2),
+    Min_Systematic  = min(Systematic, na.rm = TRUE),
+    Max_Systematic  = max(Systematic, na.rm = TRUE),
+    N_MLRAs    = dplyr::n_distinct(MLRA),
+    .groups    = "drop"
+  ) %>%
+  dplyr::arrange(year, Milestone)
+
+# Overall summary (excluding MLRAs 79 & 87)
+overall_summary_filtered <- wide_comparison_filtered %>%
+  dplyr::group_by(Milestone) %>%
+  dplyr::summarize(
+    Mean_SRS_N = round(mean(`Random (SRS)`, na.rm = TRUE), 1),
+    Mean_Sys_N = round(mean(Systematic, na.rm = TRUE), 1),
+    SD_Systematic = round(sd(Systematic, na.rm = TRUE), 2),
+    Min_Systematic  = min(Systematic, na.rm = TRUE),
+    Max_Systematic  = max(Systematic, na.rm = TRUE),
+    N_MLRAs    = dplyr::n_distinct(MLRA),
+    .groups    = "drop"
+  ) %>%
+  dplyr::arrange(Milestone)
+
+# Store filtered results
+global_stats_filtered <- list(
+  yearly = yearly_summary_filtered,
+  overall = overall_summary_filtered
+)
+
+# Display filtered results
+cat("EFFICIENCY SUMMARY (BY YEAR) - EXCLUDING MLRAs 79 & 87\n")
+cat("====================================================================\n")
+print(as.data.frame(global_stats_filtered$yearly))
+cat("====================================================================\n\n")
+
+cat("EFFICIENCY SUMMARY (ALL YEARS COMBINED) - EXCLUDING MLRAs 79 & 87\n")
+cat("====================================================================\n")
+print(as.data.frame(global_stats_filtered$overall))
+cat("====================================================================\n\n")

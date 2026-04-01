@@ -110,14 +110,7 @@ for (i in TARGET_MLRA_IDS) {
     }
 
     srs <- srsInput_full %>%
-      dplyr::filter(year == yr) %>%
-      dplyr::filter(
-        Passed_Both == TRUE &
-          dplyr::lag(Passed_Both, 1) == TRUE &
-          dplyr::lag(Passed_Both, 2) == TRUE &
-          dplyr::lag(Passed_Both, 3) == TRUE &
-          dplyr::lag(Passed_Both, 4) == TRUE
-      ) %>%
+      dplyr::filter(year == yr, Passed_Both == TRUE) %>%
       dplyr::slice(1)
 
     if (nrow(srs) == 0) {
