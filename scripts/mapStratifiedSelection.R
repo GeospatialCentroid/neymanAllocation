@@ -1,10 +1,10 @@
 # Load required libraries
 library(sf)
 library(dplyr)
-library(ggplot2)
 library(purrr)
 library(readr)
 library(stringr)
+library(leaflet)
 
 # 1. Source your custom spatial generation functions
 source("src/sampleGridsFunctions.R")
@@ -12,7 +12,7 @@ source("src/sampleGridsFunctions.R")
 # =====================================================================
 # DATA PREPARATION FUNCTION
 # =====================================================================
-#' Convert CSV sample IDs into spatial sf objects using generateAOI.R
+#' Convert CSV sample IDs into spatial sf objects using your custom getAOI
 #' @param sample_csv Path to your CSV
 #' @param grid100_obj Your base 100km grid sf object (required by getAOI)
 prepare_sample_grids <- function(sample_csv, grid100_obj) {
@@ -20,10 +20,8 @@ prepare_sample_grids <- function(sample_csv, grid100_obj) {
   samples <- read_csv(sample_csv, show_col_types = FALSE)
 
   # Iterate over every ID in the CSV and generate the 1km grid geometry
-  # using your getAOI function
   grid_list <- purrr::map(samples$id, function(current_id) {
     # Call your getAOI function
-    # (Assuming it returns an sf polygon for the 1km grid)
     aoi_grid <- getAOI(grid100 = grid100_obj, id = current_id)
 
     # Assign the ID back into the spatial object for joining
@@ -42,81 +40,100 @@ prepare_sample_grids <- function(sample_csv, grid100_obj) {
 
 
 # =====================================================================
-# FUNCTION 1: MAP A SPECIFIC MLRA
+# FUNCTION 1: MAP A SPECIFIC MLRA (LEAFLET VERSION)
 # =====================================================================
-#' Produces a map for a specific MLRA ID zooming into the 1km sample boundaries
+#' Produces an interactive leaflet map for a specific MLRA ID
 #' @param target_mlra_id The specific MLRA ID you want to plot (e.g., 56)
 #' @param mlra_boundaries The sf object containing all MLRAs
 #' @param sample_grids The sf object containing the 1km spatial sample grids
 plot_specific_mlra <- function(target_mlra_id, mlra_boundaries, sample_grids) {
-  # Filter boundaries for the specific MLRA
-  # (Note: Replace "MLRARSYM" with your exact column name in the gpkg if different)
+  # Filter boundaries and transform to WGS84 for Leaflet
   mlra_subset <- mlra_boundaries %>%
-    filter(MLRARSYM == target_mlra_id | MLRA_ID == target_mlra_id)
+    filter(MLRARSYM == target_mlra_id | MLRA_ID == target_mlra_id) %>%
+    st_transform(4326)
 
-  # Filter the spatial grids for the specific MLRA
+  # Filter grids and transform to WGS84 for Leaflet
   grid_subset <- sample_grids %>%
-    filter(MLRA_ID == target_mlra_id)
+    filter(MLRA_ID == target_mlra_id) %>%
+    st_transform(4326)
 
-  # Generate Map
-  ggplot() +
-    # Plot the specific MLRA region
-    geom_sf(
+  # Generate Leaflet Map
+  leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    # Add the MLRA boundary
+    addPolygons(
       data = mlra_subset,
-      fill = "lightblue",
-      color = "darkblue",
-      alpha = 0.4
-    ) +
-    # Plot the 1km sample grids inside it
-    geom_sf(
+      fillColor = "#ADD8E6",
+      color = "#00008B",
+      weight = 2,
+      fillOpacity = 0.3,
+      popup = ~ paste("<b>MLRA ID:</b>", target_mlra_id)
+    ) %>%
+    # Add the 1km Sample Grids
+    addPolygons(
       data = grid_subset,
-      fill = "red",
+      fillColor = "red",
       color = "black",
-      alpha = 0.8,
-      size = 0.5
-    ) +
-    theme_minimal() +
-    labs(
-      title = paste("Sampling Strategy Map - MLRA:", target_mlra_id),
-      subtitle = paste(
-        "Showing",
-        nrow(grid_subset),
-        "selected 1km sample grid(s)"
-      ),
-      x = "Longitude",
-      y = "Latitude"
+      weight = 1,
+      fillOpacity = 0.8,
+      popup = ~ paste("<b>Sample ID:</b>", id, "<br>", "<b>LLR ID:</b>", LLR_ID)
+    ) %>%
+    addControl(
+      html = paste("<b>MLRA:", target_mlra_id, "Sampling Strategy</b>"),
+      position = "topright"
     )
 }
 
 
 # =====================================================================
-# FUNCTION 2: MAP ALL LOCATIONS (AS POINTS) ACROSS ALL MLRAS
+# FUNCTION 2: MAP ALL LOCATIONS (LEAFLET VERSION)
 # =====================================================================
-#' Produces a large-scale map displaying 1km grids as points over MLRA boundaries
+#' Produces a large-scale interactive map displaying 1km grids as circle markers
 #' @param mlra_boundaries The sf object containing all MLRAs
 #' @param sample_grids The sf object containing the 1km spatial sample grids
 plot_all_mlras <- function(mlra_boundaries, sample_grids) {
-  # Convert the 1km grid polygons into points (centroids)
-  # so they render properly on a wide-scale map
-  grid_points <- st_centroid(sample_grids)
+  # Transform all boundaries to WGS84 for Leaflet
+  mlra_wgs84 <- mlra_boundaries %>%
+    st_transform(4326)
 
-  # Generate Map
-  ggplot() +
-    # Plot all MLRA boundaries
-    geom_sf(
-      data = mlra_boundaries,
-      fill = "whitesmoke",
-      color = "darkgray",
-      size = 0.2
-    ) +
-    # Plot the sample grids as points
-    geom_sf(data = grid_points, color = "red", size = 1.5, alpha = 0.7) +
-    theme_minimal() +
-    labs(
-      title = "Complete Sampling Strategy Map",
-      subtitle = "All 1km Sample Locations shown as points across MLRA boundaries",
-      x = "Longitude",
-      y = "Latitude"
+  # Convert the 1km grid polygons into points (centroids), then to WGS84
+  grid_points <- sample_grids %>%
+    st_centroid() %>%
+    st_transform(4326)
+
+  # Generate Leaflet Map
+  leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron) %>%
+    # Add all MLRA boundaries
+    addPolygons(
+      data = mlra_wgs84,
+      fillColor = "#f5f5f5",
+      color = "#a9a9a9",
+      weight = 1,
+      fillOpacity = 0.2,
+      popup = ~ paste("<b>MLRA ID:</b>", MLRARSYM)
+    ) %>%
+    # Add the sample grids as circle markers
+    addCircleMarkers(
+      data = grid_points,
+      color = "red",
+      radius = 4,
+      stroke = FALSE,
+      fillOpacity = 0.7,
+      popup = ~ paste(
+        "<b>Sample ID:</b>",
+        id,
+        "<br>",
+        "<b>MLRA ID:</b>",
+        MLRA_ID,
+        "<br>",
+        "<b>LLR ID:</b>",
+        LLR_ID
+      )
+    ) %>%
+    addControl(
+      html = "<b>Complete Sampling Strategy</b>",
+      position = "topright"
     )
 }
 
@@ -125,25 +142,29 @@ plot_all_mlras <- function(mlra_boundaries, sample_grids) {
 # =====================================================================
 # To run this script, follow these steps:
 
-# 1. Ensure you have yo"ur base 100km grid loaded in your environment!
+# 1. Load your base 100km grid from the raw data folder
 my_grid100 <- st_read("data/raw/grid100km_aea.gpkg")
 
-# 2. Load MLRA Geopackage
+# 2. Load MLRA Geopackage from the derived data folder
 mlra_sf <- st_read("data/derived/mlra/lower48MLRA.gpkg")
 
-# 3. Generate the spatial objects from the CSV using your functions
+# 3. Generate the spatial objects from the CSV in the products folder
 sample_spatial_grids <- prepare_sample_grids(
-  sample_csv = "Ldata/products/systematicSampleSelection/selectedSample.csv",
+  sample_csv = "data/products/systematicSampleSelection/selectedSample.csv",
   grid100_obj = my_grid100
 )
 
 # 4. Create the specific map (For example, MLRA ID 56)
-# map_mlra_56 <- plot_specific_mlra(target_mlra_id = 56,
-#                                   mlra_boundaries = mlra_sf,
-#                                   sample_grids = sample_spatial_grids)
-# print(map_mlra_56)
+map_mlra_56 <- plot_specific_mlra(
+  target_mlra_id = 56,
+  mlra_boundaries = mlra_sf,
+  sample_grids = sample_spatial_grids
+)
+print(map_mlra_56) # Uncomment to view in RStudio viewer
 
-# 5. Create the comprehensive map (Grids converted to points)
-# map_all <- plot_all_mlras(mlra_boundaries = mlra_sf,
-#                           sample_grids = sample_spatial_grids)
-# print(map_all)
+# 5. Create the comprehensive map
+map_all <- plot_all_mlras(
+  mlra_boundaries = mlra_sf,
+  sample_grids = sample_spatial_grids
+)
+print(map_all) # Uncomment to view in RStudio viewer
