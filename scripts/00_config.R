@@ -35,10 +35,10 @@ WGS_CRS <- "EPSG:4326" # WGS 84
 
 # Failsafes if run outside of main.R
 if (!exists("PROCESSING_EXTENT")) {
-    PROCESSING_EXTENT <- "NEBRASKA"
+    PROCESSING_EXTENT <- "GREAT_PLAINS"
 }
 if (!exists("TARGET_LRR")) {
-    TARGET_LRR <- NULL
+    TARGET_LRR <- "F"
 }
 
 if (PROCESSING_EXTENT == "NEBRASKA") {

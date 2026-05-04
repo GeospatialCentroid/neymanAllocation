@@ -7,9 +7,6 @@
 
 source("scripts/00_config.R")
 source("src/sampleGridsFunctions.R") # Ensure this points to where you saved the functions
-library(sf)
-library(dplyr)
-library(purrr)
 
 # --- 1. SETTINGS & INPUTS -----------------------------------------------------
 
@@ -68,45 +65,62 @@ for (m_id in target_mlras) {
   # 1. Isolate the specific MLRA polygon
   current_mlra <- mlra_poly %>% dplyr::filter(MLRA_ID == m_id)
 
-  if (nrow(current_mlra) == 0) {
-    warning(paste("MLRA", m_id, "not found in polygon data. Skipping."))
-    next
+  # does the file exist 
+  if(!file.exists(paste0("data/derived/grids/mlra_",m_id,"_mlra.gpkg"))){
+    if (nrow(current_mlra) == 0) {
+      warning(paste("MLRA", m_id, "not found in polygon data. Skipping."))
+      next
+    }
+    
+    # 2. Select only the 100km parent grids that intersect this MLRA
+    intersecting_100km <- select100km(parent_100km, current_mlra)
+    
+    if (nrow(intersecting_100km) == 0) {
+      next
+    }
+    
+    # 3. Generate 1km SubGrids
+    # Uses your function: buildSubGrids(grids, cell_size, aoi)
+    # cell_size is 1000 meters (1km)
+    
+    # sub_grids_1km <- buildSubGrids(
+    #   grids = intersecting_100km,
+    #   cell_size = 1000,
+    #   aoi = current_mlra
+    # )
+    
+    t1 <- buildSubGrids(grids = intersecting_100km, cell_size = 50000, aoi = intersecting_100km)
+    # filter and generate to new area 10k
+    t2 <- buildSubGrids(grids = t1, cell_size = 10000, aoi = t1)
+    # filter and generate to new area 2k
+    t3 <- buildSubGrids(grids = t2, cell_size = 2000, aoi = t2)
+    # generate 1km grids
+    t4 <- buildSubGrids(grids = t3, cell_size = 1000, aoi = t3)
+    
+    
+    # 4. Attach MLRA_ID and format for export
+    sub_grids_1km <- t4 %>%
+      dplyr::mutate(MLRA_ID = m_id) %>%
+      # crop the feature to the MLRA area 
+      sf::st_intersection(current_mlra) |> 
+      dplyr::select(id, MLRA_ID)
+    
+    
+    # 5. Append to the Master GeoPackage
+    # By appending, we save memory and build the dataset safely piece by piece
+    sf::st_write(
+      obj = sub_grids_1km,
+      dsn = paste0("data/derived/grids/mlra_",m_id,"_mlra.gpkg"),
+      layer = "grid_1km",
+      append = file_exists_flag, # Append if true, overwrite if false
+      quiet = TRUE
+    )
+    
+    # After the first successful write, ensure all subsequent writes are appended
+    file_exists_flag <- TRUE
   }
-
-  # 2. Select only the 100km parent grids that intersect this MLRA
-  intersecting_100km <- select100km(parent_100km, current_mlra)
-
-  if (nrow(intersecting_100km) == 0) {
-    next
-  }
-
-  # 3. Generate 1km SubGrids
-  # Uses your function: buildSubGrids(grids, cell_size, aoi)
-  # cell_size is 1000 meters (1km)
-  sub_grids_1km <- buildSubGrids(
-    grids = intersecting_100km,
-    cell_size = 1000,
-    aoi = current_mlra
-  )
-
-  # 4. Attach MLRA_ID and format for export
-  sub_grids_1km <- sub_grids_1km %>%
-    dplyr::mutate(MLRA_ID = m_id) %>%
-    # Let sf's 'sticky geometry' handle the spatial column automatically
-    dplyr::select(id, MLRA_ID)
-
-  # 5. Append to the Master GeoPackage
-  # By appending, we save memory and build the dataset safely piece by piece
-  sf::st_write(
-    obj = sub_grids_1km,
-    dsn = OUTPUT_GRID_PATH,
-    layer = "grid_1km",
-    append = file_exists_flag, # Append if true, overwrite if false
-    quiet = TRUE
-  )
-
-  # After the first successful write, ensure all subsequent writes are appended
-  file_exists_flag <- TRUE
+  
+ 
 }
 
 message("\n=== Grid Generation Complete! ===")
