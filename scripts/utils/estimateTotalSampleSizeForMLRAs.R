@@ -1,153 +1,142 @@
-# Load necessary libraries (Make sure to install 'sf' if you haven't already: install.packages("sf"))
+# =========================================================================
+# estimateTotalSampleSizeForMLRAs.R (Updated)
+# =========================================================================
+
 library(dplyr)
 library(readr)
 library(purrr)
 library(fs)
 library(sf)
+library(ggplot2)
 
 # -------------------------------------------------------------------------
 # 1. READ AND COMBINE CSVs
 # -------------------------------------------------------------------------
-# Update this directory to wherever your MLRA CSVs are located
 csv_dir <- "data/derived/mlra_nlcd_summaryArea"
-
-# Update glob to explicitly look for *_attributes.csv
 csv_files <- dir_ls(csv_dir, glob = "*_attributes.csv")
 
 all_mlra_data <- csv_files %>%
-  map_dfr(read_csv, .id = "source_file")
-
-# -------------------------------------------------------------------------
-# 2. COMBINE NLCD CLASSES BASED ON MRLC LEGEND (NORMALIZED TO 100%)
-# -------------------------------------------------------------------------
-all_mlra_data <- all_mlra_data %>%
+  map_dfr(read_csv, .id = "source_file") %>%
   mutate(
-    # Step A: Calculate the raw sums.
-    # Because 'matches()' captures columns for 2010, 2016, and 2020 simultaneously,
-    # these raw sums might add up to ~300% per row.
+    # Normalize NLCD classes
     Forest_raw = rowSums(select(., matches("class_(41|42|43)")), na.rm = TRUE),
-    Herbaceous_raw = rowSums(
-      select(., matches("class_(71|72|73|74)")),
-      na.rm = TRUE
-    ),
-    Developed_raw = rowSums(
-      select(., matches("class_(21|22|23|24)")),
-      na.rm = TRUE
-    ),
+    Herbaceous_raw = rowSums(select(., matches("class_(71|72|73|74)")), na.rm = TRUE),
+    Developed_raw = rowSums(select(., matches("class_(21|22|23|24)")), na.rm = TRUE),
     Cultivated_raw = rowSums(select(., matches("class_(81|82)")), na.rm = TRUE),
     Wetlands_raw = rowSums(select(., matches("class_(90|95)")), na.rm = TRUE),
     Water_raw = rowSums(select(., matches("class_(11|12)")), na.rm = TRUE),
     Barren_raw = rowSums(select(., matches("class_31")), na.rm = TRUE),
     Shrubland_raw = rowSums(select(., matches("class_(51|52)")), na.rm = TRUE),
-
-    # Step B: Calculate the total percentage captured in this row
-    Total_Coverage = Forest_raw +
-      Herbaceous_raw +
-      Developed_raw +
-      Cultivated_raw +
-      Wetlands_raw +
-      Water_raw +
-      Barren_raw +
-      Shrubland_raw,
-
-    # Step C: Normalize back to a true 0-100% scale
-    Forest = (Forest_raw / Total_Coverage) * 100,
-    Herbaceous = (Herbaceous_raw / Total_Coverage) * 100,
-    Developed = (Developed_raw / Total_Coverage) * 100,
-    Cultivated = (Cultivated_raw / Total_Coverage) * 100,
-    Wetlands = (Wetlands_raw / Total_Coverage) * 100,
-    Water = (Water_raw / Total_Coverage) * 100,
-    Barren = (Barren_raw / Total_Coverage) * 100,
-    Shrubland = (Shrubland_raw / Total_Coverage) * 100
+    
+    Total_Coverage = Forest_raw + Herbaceous_raw + Developed_raw + Cultivated_raw + 
+      Wetlands_raw + Water_raw + Barren_raw + Shrubland_raw,
+    
+    Forest = (Forest_raw / Total_Coverage) * 100
   ) %>%
-  # Keep only the cleaned, normalized percentage columns
-  select(
-    source_file,
-    MLRA_ID,
-    Forest,
-    Herbaceous,
-    Developed,
-    Cultivated,
-    Wetlands,
-    Water,
-    Barren,
-    Shrubland
-  )
-
+  # Keep only what we need to save memory
+  select(source_file, MLRA_ID, Forest)
 
 # -------------------------------------------------------------------------
-# 3. AGGREGATE DATA ACROSS YEARS (Mean per MLRA)
+# 2. AGGREGATE DATA ACROSS YEARS 
 # -------------------------------------------------------------------------
 mlra_aggregated <- all_mlra_data %>%
   group_by(MLRA_ID) %>%
-  summarise(across(
-    # Now, the only numeric columns left to average are Forest, Herbaceous, etc.
-    .cols = where(is.numeric) & !matches("year|source_file"),
-    .fns = ~ mean(.x, na.rm = TRUE)
-  )) %>%
-  ungroup()
-
-# export 
-write_csv(mlra_aggregated, "temp/mlra_aggregated.csv")
+  summarise(Forest = mean(Forest, na.rm = TRUE), .groups = "drop")
 
 # -------------------------------------------------------------------------
-# 4. LOAD SPATIAL DATA (GPKG) & JOIN
+# 3. LOAD SPATIAL DATA (GPKG) & FILTER TO LRRs G & H
 # -------------------------------------------------------------------------
-# Extract the attributes from the GPKG without keeping the heavy geometries
-mlra_sf <- st_read("data/derived/mlra/lower48MLRA.gpkg", quiet = TRUE) %>%
-  st_drop_geometry() %>%
-  select(MLRA_ID, LRRSYM, LRR_NAME)
+# Note: We are keeping the geometry this time so we can map it later
+mlra_sf <- st_read("data/derived/mlra/lower48MLRA.gpkg", quiet = TRUE) 
 
-# Join spatial attributes to our aggregated stats
-mlra_joined <- mlra_aggregated %>%
-  left_join(mlra_sf, by = "MLRA_ID")
+mlra_joined_sf <- mlra_sf %>%
+  left_join(mlra_aggregated, by = "MLRA_ID") %>%
+  filter(LRRSYM %in% c("G", "H")) # Isolate target regions
 
 # -------------------------------------------------------------------------
-# 5. APPLY SAMPLING STRATEGY LOGIC
+# 4. APPLY THE 3 SAMPLING STRATEGIES 
 # -------------------------------------------------------------------------
-# Updated parameters based on your requirements
-forest_threshold <- 0.5
-herbaceous_threshold <- 85.0 # Assumed high threshold based on earlier MLRA 79 logic
-# 900 when include all MLRA, or 600 when exclude those that would be sampled at 1400
-mean_plus_sd_size <- 600
-
+forest_threshold <- 0.2
 high_density_size <- 1400
+low_density_mean_sd <- 550
+low_density_max <- 650
 num_years <- 3
 
-mlra_scored <- mlra_joined %>%
+mlra_scored_sf <- mlra_joined_sf %>%
   mutate(
-    # Assign base sample size per year per MLRA
-    base_sample_size = case_when(
-      Herbaceous >= herbaceous_threshold |
-        Forest <= forest_threshold ~ high_density_size,
-      TRUE ~ mean_plus_sd_size
-    ),
-
-    # Calculate the total sample size across the 3 years for that individual MLRA
-    mlra_total_samples = base_sample_size * num_years
+    Is_High_Target = Forest <= forest_threshold,
+    
+    # Base Budgets per Year
+    Strat1_Base = high_density_size,
+    Strat2_Base = ifelse(Is_High_Target, high_density_size, low_density_mean_sd),
+    Strat3_Base = ifelse(Is_High_Target, high_density_size, low_density_max),
+    
+    # 3-Year Total Budgets
+    Strat1_Total = Strat1_Base * num_years,
+    Strat2_Total = Strat2_Base * num_years,
+    Strat3_Total = Strat3_Base * num_years
   )
 
 # -------------------------------------------------------------------------
-# 6. GROUP BY LRR AND CALCULATE FINAL TOTAL SAMPLES
+# 5. TABULAR SUMMARY FOR LRRs G & H
 # -------------------------------------------------------------------------
-# This creates the final summary grouped by the LRR Synonym
-lrr_summary <- mlra_scored %>%
-  group_by(LRRSYM, LRR_NAME) %>%
+tabular_summary <- mlra_scored_sf %>%
+  st_drop_geometry() %>% # Drop geometry to cleanly aggregate tabular data
+  group_by(LRRSYM) %>%
   summarise(
-    Total_MLRAs_in_LRR = n(),
-    Total_Samples_Required = sum(mlra_total_samples, na.rm = TRUE),
-    Avg_Forest_Pct = mean(Forest, na.rm = TRUE),
-    Avg_Herbaceous_Pct = mean(Herbaceous, na.rm = TRUE),
+    Total_MLRAs = n(),
+    High_Density_Count = sum(Is_High_Target, na.rm = TRUE),
+    Low_Density_Count = Total_MLRAs - High_Density_Count,
+    
+    # Total samples across the 3 years for the entire LRR
+    Strat1_Cost = sum(Strat1_Total, na.rm = TRUE),
+    Strat2_Cost = sum(Strat2_Total, na.rm = TRUE),
+    Strat3_Cost = sum(Strat3_Total, na.rm = TRUE),
     .groups = "drop"
   )
 
-# -------------------------------------------------------------------------
-# 7. EXPORT THE RESULTS
-# -------------------------------------------------------------------------
-print(head(lrr_summary))
+# Add a 'Total' row to sum G and H together
+total_row <- tabular_summary %>%
+  summarise(
+    LRRSYM = "TOTAL (G + H)",
+    Total_MLRAs = sum(Total_MLRAs),
+    High_Density_Count = sum(High_Density_Count),
+    Low_Density_Count = sum(Low_Density_Count),
+    Strat1_Cost = sum(Strat1_Cost),
+    Strat2_Cost = sum(Strat2_Cost),
+    Strat3_Cost = sum(Strat3_Cost)
+  )
 
-# Save the grouped summary out
-write_csv(lrr_summary, "LRR_Sample_Requirements_Summary.csv")
+final_summary <- bind_rows(tabular_summary, total_row)
 
-# Save the individual MLRA table as a backup to inspect the individual MLRA math
-write_csv(mlra_scored, "MLRA_Individual_Sample_Requirements.csv")
+print("--- SAMPLING COST SUMMARY (3-YEAR ESTIMATES) ---")
+print(final_summary)
+write_csv(final_summary, "LRR_G_H_Cost_Comparison.csv")
+
+# -------------------------------------------------------------------------
+# 6. SPATIAL SUMMARY (MAP)
+# -------------------------------------------------------------------------
+# Mapping Strategy 2 (1400 vs 550). 
+# If you want to map Strategy 3 instead, change 'fill = factor(Strat2_Base)' to 'Strat3_Base'
+
+map_plot <- ggplot(data = mlra_scored_sf) +
+  geom_sf(aes(fill = factor(Strat2_Base)), color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    values = c("550" = "#41B6C4", "650" = "#2C7FB8", "1400" = "#E31A1C"),
+    name = "Sample Budget\n(per year)"
+  ) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Sampling Density Assignment (LRRs G & H)",
+    subtitle = "Rule: 1400 samples if Forest <= 0.2%",
+    caption = "Assigned values represent annual baseline samples."
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold"),
+    axis.text = element_blank() # Hide lat/lon text for a cleaner presentation map
+  )
+
+# Save the map to disk
+ggsave("LRR_G_H_Sample_Density_Map.png", plot = map_plot, width = 8, height = 6, bg = "white")
+cat("\nProcess Complete! Map exported to 'LRR_G_H_Sample_Density_Map.png'\n")

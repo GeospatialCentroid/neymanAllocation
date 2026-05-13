@@ -363,6 +363,9 @@ combined_df_filtered <- dplyr::bind_rows(
   srs_milestones_filtered,
   sys_milestones_filtered
 )
+# export for more direct evaluation 
+## includes all MLRAS 
+write_csv(combined_df_filtered, "temp/sampleRequirementsNebraska.csv")
 
 # Pivot wider and aggregate
 wide_comparison_filtered <- combined_df_filtered %>%

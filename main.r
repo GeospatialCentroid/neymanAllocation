@@ -10,7 +10,7 @@
 setwd("~/trueNAS/work/neymanSampling")
 
 # SET YOUR EXTENT ("NEBRASKA" or "GREAT_PLAINS")
-PROCESSING_EXTENT <- "GREAT_PLAINS"
+PROCESSING_EXTENT <- "NEBRASKA"
 ## Define which LRRs to include from the lower 48m, does not apply to Nebraska processing
 TARGET_LRR <- c("F", "G", "H")
 
@@ -21,18 +21,18 @@ source("scripts/00_config.R")
 # Set these to TRUE to execute a step, or FALSE to skip it.
 # This allows you to re-run later steps without waiting for earlier processing.
 RUN_00a_GENERATE_GRIDS <- FALSE # Generate 1km grids from 100km parents (only needs to be done once)
-RUN_01_STATIC_PROCESSING <- TRUE # Process base NLCD/Grid data
+RUN_01_STATIC_PROCESSING <- FALSE # Process base NLCD/Grid data
 RUN_02_DYNAMIC_PROCESSING <- FALSE # Extract TOF from model tiles
 RUN_03_STRATIFICATION_TESTING <- FALSE # Evaluate all stratification methods
 RUN_04_BASELINE_SAMPLING <- FALSE # SRS baseline testing
-RUN_04b_SYSTEMATIC_SAMPLING <- FALSE # SRS baseline testing
-RUN_04c_COMPARISON_SAMPLING <- FALSE # SRS baseline testing
+RUN_04b_SYSTEMATIC_SAMPLING <- FALSE # Systematic sampling testing 
+RUN_04c_COMPARISON_SAMPLING <- TRUE # SRS baseline testing
 # RUN_04_ITERATIVE_SAMPLING <- FALSE # (Optional) Detailed Neyman testing
-RUN_05_GATHER_RESULTS <- FALSE # Calculate Sample Budgets
-RUN_06_MLRA_GROUPING <- FALSE # Apply hierarchical logic for pooling
-RUN_07_VARIANCE_PROFILING <- FALSE # Generate Universal Variance Profiles
-RUN_08_PREDICT_ALLOCATIONS <- FALSE # Generate Nebraska sampling guides
-RUN_09_TEST_PREDICTIONS <- FALSE # 100x Simulation on Nebraska MLRAs
+RUN_05_GATHER_RESULTS <- TRUE # Calculate Sample Budgets
+RUN_06_MLRA_GROUPING <- TRUE # Apply hierarchical logic for pooling
+RUN_07_VARIANCE_PROFILING <- TRUE # Generate Universal Variance Profiles
+RUN_08_PREDICT_ALLOCATIONS <- TRUE # Generate Nebraska sampling guides
+RUN_09_TEST_PREDICTIONS <- TRUE # 100x Simulation on Nebraska MLRAs
 
 # NEW: Validating on a completely novel, un-trained MLRA
 RUN_10_NOVEL_VALIDATION <- TRUE
@@ -63,12 +63,12 @@ if (RUN_03_STRATIFICATION_TESTING) {
 
 if (RUN_04_BASELINE_SAMPLING) {
   message("\n>>> Running 04_random_sampling_test.R")
-  source("scripts/04b_systematic_sampling.R")
+  source("scripts/04_random_sampling_test.R")
 }
 
 if (RUN_04b_SYSTEMATIC_SAMPLING ) {
   message("\n>>> Running 04_random_sampling_test.R")
-  source("scripts/04c_compare_sampling_methods.R")
+  source("scripts/04b_systematic_sampling.R")
   
 }
 if (RUN_04c_COMPARISON_SAMPLING) {
@@ -79,8 +79,8 @@ if (RUN_04c_COMPARISON_SAMPLING) {
 if (RUN_05_GATHER_RESULTS) {
   message("\n>>> Running 05_gatherResults.R")
   # Note: Generate Summary Stats usually runs before this step
-  source("scripts/07_generate_summary_stats.R")
   source("scripts/05_gatherResults.R")
+  source("scripts/utils/generate_summary_stats.R")
 }
 
 if (RUN_06_MLRA_GROUPING) {

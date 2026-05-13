@@ -90,21 +90,25 @@ plot_specific_mlra <- function(target_mlra_id, mlra_boundaries, sample_grids) {
 # =====================================================================
 #' Produces a large-scale interactive map displaying 1km grids as circle markers
 #' @param mlra_boundaries The sf object containing all MLRAs
-#' @param sample_grids The sf object containing the 1km spatial sample grids
-plot_all_mlras <- function(mlra_boundaries, sample_grids) {
-  # Transform all boundaries to WGS84 for Leaflet
+#' @param precomputed_points The sf object containing the cached grid centroids
+plot_all_mlras <- function(mlra_boundaries, precomputed_points) {
+  # Transform boundaries to WGS84 for Leaflet
   mlra_wgs84 <- mlra_boundaries %>%
     st_transform(4326)
-
-  # Convert the 1km grid polygons into points (centroids), then to WGS84
-  grid_points <- sample_grids %>%
-    st_centroid() %>%
+  
+  # Transform cached points to WGS84 for Leaflet
+  points_wgs84 <- precomputed_points %>%
     st_transform(4326)
-
+  
+  # Create a qualitative color palette based on the unique MLRA IDs
+  mlra_pal <- colorFactor(
+    palette = "viridis", 
+    domain = points_wgs84$MLRA_ID
+  )
+  
   # Generate Leaflet Map
   leaflet() %>%
     addProviderTiles(providers$CartoDB.Positron) %>%
-    # Add all MLRA boundaries
     addPolygons(
       data = mlra_wgs84,
       fillColor = "#f5f5f5",
@@ -113,58 +117,80 @@ plot_all_mlras <- function(mlra_boundaries, sample_grids) {
       fillOpacity = 0.2,
       popup = ~ paste("<b>MLRA ID:</b>", MLRARSYM)
     ) %>%
-    # Add the sample grids as circle markers
     addCircleMarkers(
-      data = grid_points,
-      color = "red",
+      data = points_wgs84,
+      color = ~mlra_pal(MLRA_ID), 
       radius = 4,
       stroke = FALSE,
-      fillOpacity = 0.7,
+      fillOpacity = 0.8,
       popup = ~ paste(
-        "<b>Sample ID:</b>",
-        id,
+        "<b>Sample ID:</b>", id,
         "<br>",
-        "<b>MLRA ID:</b>",
-        MLRA_ID,
+        "<b>MLRA ID:</b>", MLRA_ID,
         "<br>",
-        "<b>LLR ID:</b>",
-        LLR_ID
+        "<b>LLR ID:</b>", LLR_ID
       )
+    ) %>%
+    addLegend(
+      position = "bottomright",
+      pal = mlra_pal,
+      values = points_wgs84$MLRA_ID,
+      title = "MLRA ID",
+      opacity = 0.8
     ) %>%
     addControl(
       html = "<b>Complete Sampling Strategy</b>",
       position = "topright"
     )
-}
-
-# =====================================================================
+}# =====================================================================
 # EXECUTION WORKFLOW
 # =====================================================================
-# To run this script, follow these steps:
 
-# 1. Load your base 100km grid from the raw data folder
-my_grid100 <- st_read("data/raw/grid100km_aea.gpkg")
+# 1. Load base layers
+my_grid100 <- st_read("data/raw/grid100km_aea.gpkg", quiet = TRUE)
+mlra_sf <- st_read("data/derived/mlra/lower48MLRA.gpkg", quiet = TRUE)
 
-# 2. Load MLRA Geopackage from the derived data folder
-mlra_sf <- st_read("data/derived/mlra/lower48MLRA.gpkg")
+# 2. Define output paths for cached spatial objects
+grids_cache_path <- "data/products/systematicSampleSelection/spatial_grids_cache.gpkg"
+points_cache_path <- "data/products/systematicSampleSelection/spatial_points_cache.gpkg"
 
-# 3. Generate the spatial objects from the CSV in the products folder
-sample_spatial_grids <- prepare_sample_grids(
-  sample_csv = "data/products/systematicSampleSelection/selectedSample.csv",
-  grid100_obj = my_grid100
-)
+# 3. Check for or generate Sample Grids (Polygons)
+if (file.exists(grids_cache_path)) {
+  message("Loading cached spatial grids from disk...")
+  sample_spatial_grids <- st_read(grids_cache_path, quiet = TRUE)
+} else {
+  message("Generating spatial grids (this may take a moment)...")
+  sample_spatial_grids <- prepare_sample_grids(
+    sample_csv = "data/products/systematicSampleSelection/selectedSample_lrr_F_05_2026.csv",
+    grid100_obj = my_grid100
+  )
+  message("Saving spatial grids to cache...")
+  st_write(sample_spatial_grids, grids_cache_path, append = FALSE, quiet = TRUE)
+}
 
-# 4. Create the specific map (For example, MLRA ID 56)
+# 4. Check for or generate Grid Centroids (Points)
+if (file.exists(points_cache_path)) {
+  message("Loading cached spatial points from disk...")
+  grid_points <- st_read(points_cache_path, quiet = TRUE)
+} else {
+  message("Generating spatial points from grids...")
+  # Keep in original projection for saving, map function will handle WGS84 conversion
+  grid_points <- sample_spatial_grids %>% st_centroid() 
+  message("Saving spatial points to cache...")
+  st_write(grid_points, points_cache_path, append = FALSE, quiet = TRUE)
+}
+
+# 5. Create the specific map (MLRA ID 56)
 map_mlra_56 <- plot_specific_mlra(
   target_mlra_id = 56,
   mlra_boundaries = mlra_sf,
   sample_grids = sample_spatial_grids
 )
-print(map_mlra_56) # Uncomment to view in RStudio viewer
+# print(map_mlra_56) 
 
-# 5. Create the comprehensive map
+# 6. Create the comprehensive map using pre-computed points
 map_all <- plot_all_mlras(
   mlra_boundaries = mlra_sf,
-  sample_grids = sample_spatial_grids
+  precomputed_points = grid_points # Pass the cached points here
 )
-print(map_all) # Uncomment to view in RStudio viewer
+# print(map_all)

@@ -39,42 +39,55 @@ YEARS <- c(2010, 2016, 2020)
 
 # --- 3. MAIN SIMULATION LOOP --------------------------------------------------
 
+# --- 3. MAIN SIMULATION LOOP --------------------------------------------------
+
 mlra_ids <- if (!is.null(TARGET_MLRA_IDS)) TARGET_MLRA_IDS else ALL_MLRA_IDS
+
+# NEW: Use the dynamic path and CRS from 00_config.R
+message("Loading spatial grids...")
+master_grid_sf <- sf::st_read(ACTIVE_GRID_PATH, quiet = TRUE)
+
+# Force the spatial grid into the project's standard equal-area CRS
+master_grid_sf <- sf::st_transform(master_grid_sf, crs = ALBERS_CRS)
 
 for (m_id in mlra_ids) {
   message(paste0(
-    "\n--- Starting Systematic Sampling Stress-Test: ",
+    "\n--- Starting Spatially Balanced Sampling Stress-Test: ",
     m_id,
     " ---"
   ))
+  
   data_file <- file.path(INPUT_DYNAMIC_DIR, paste0("MLRA_", m_id, input_suffix))
-
+  
   if (!file.exists(data_file)) {
     warning(paste("Data missing for MLRA", m_id))
     next
   }
-
+  
   df_full <- readr::read_csv(data_file, show_col_types = FALSE)
   if (!AREA_COL %in% names(df_full)) {
     stop("Error: Area column not found.")
   }
-
-  # NOTE: To ensure systematic sampling moves left-to-right, top-to-bottom,
-  # the data MUST be spatially sorted here if it isn't already.
-  # Example: df_full <- df_full %>% dplyr::arrange(desc(latitude), longitude)
-
+  
+  # NEW: Isolate spatial geometries for the current MLRA
+  mlra_spatial <- master_grid_sf %>% dplyr::filter(MLRA_ID == m_id)
+  
+  # Union the grids to create a single boundary polygon to sample within.
+  # This prevents st_sample from over-sampling dense geometries.
+  mlra_boundary <- sf::st_union(mlra_spatial)
+  
   sim_results_list <- list()
-
+  
   for (yr in YEARS) {
     pop_df <- df_full %>% dplyr::filter(year == yr, !is.na(TOF))
     if (nrow(pop_df) == 0) {
       next
     }
-
+    
     TRUE_MEAN <- weighted.mean(pop_df$TOF, pop_df[[AREA_COL]], na.rm = TRUE)
     TOTAL_POP <- nrow(pop_df)
     TOLERANCE_VAL <- TRUE_MEAN * ACCURACY_TOLERANCE
-
+    
     message(paste0(
       "   Year: ",
       yr,
@@ -84,39 +97,59 @@ for (m_id in mlra_ids) {
       round(TRUE_MEAN, 2),
       "%"
     ))
-
+    
     max_n <- TOTAL_POP
-
+    
     for (n_total in seq(100, max_n, SAMPLE_STEP)) {
       sim_outcomes <- data.frame(
         mean_est = numeric(SIM_REPS),
         covered = logical(SIM_REPS),
         accurate = logical(SIM_REPS)
       )
-
+      
       for (r in 1:SIM_REPS) {
-        # The systematic function handles the random seed internally via runif()
-        # but setting it here ensures full reproducibility for each simulation rep
         set.seed(r)
-
-        drawn_sample <- draw_systematic_sample(pop_df, n_total)
+        
+        # 1. Generate spatially balanced points (returns raw sfc geometry)
+        sampled_points_sfc <- sf::st_sample(
+          x = mlra_boundary, 
+          size = n_total, 
+          type = "regular"
+        )
+        
+        # 2. Convert to an sf object and explicitly lock in the EXACT config CRS 
+        sampled_points <- sf::st_sf(
+          geometry = sampled_points_sfc, 
+          crs = ALBERS_CRS
+        )
+        
+        # 3. Extract intersecting 1km grid IDs using fast geometry indexing
+        intersecting_indices <- suppressMessages(
+          unlist(sf::st_intersects(sampled_points, mlra_spatial))
+        )
+        
+        selected_ids <- mlra_spatial$id[intersecting_indices]
+        
+        # 4. Filter the tabular dataset
+        drawn_sample <- pop_df %>% dplyr::filter(id %in% selected_ids)
+        # ----------------------------------------------------------------------
+        
+        # Continue with estimation (ensure analyze_weighted_sample is still sourced)
         est <- analyze_weighted_sample(drawn_sample, TOTAL_POP, AREA_COL)
-
+        
         sim_outcomes$mean_est[r] <- est["mean"]
-        sim_outcomes$accurate[r] <- abs(est["mean"] - TRUE_MEAN) <=
-          TOLERANCE_VAL
-        sim_outcomes$covered[r] <- (est["ci_l"] <= TRUE_MEAN) &
-          (est["ci_u"] >= TRUE_MEAN)
+        sim_outcomes$accurate[r] <- abs(est["mean"] - TRUE_MEAN) <= TOLERANCE_VAL
+        sim_outcomes$covered[r] <- (est["ci_l"] <= TRUE_MEAN) & (est["ci_u"] >= TRUE_MEAN)
       }
-
+      
       accuracy_rate <- mean(sim_outcomes$accurate)
       coverage_rate <- mean(sim_outcomes$covered)
-
+      
       pass_80 <- accuracy_rate >= ACCURACY_PASS_RATE_80
       pass_95 <- accuracy_rate >= ACCURACY_PASS_RATE_95
       pass_cov <- coverage_rate >= COVERAGE_PASS_RATE_95
       pass_both <- pass_95 & pass_cov
-
+      
       sim_results_list[[length(sim_results_list) + 1]] <- data.frame(
         MLRA = m_id,
         year = yr,
@@ -130,8 +163,7 @@ for (m_id in mlra_ids) {
         Passed_Coverage_95 = pass_cov,
         Passed_Both = pass_both
       )
-
-      # Early exit: Stop sampling only once BOTH 95% accuracy and 95% CI coverage are achieved
+      
       if (pass_both) {
         message(sprintf(
           "      -> Reached 95%% Acc & 95%% CI at N = %d. Moving to next feature.",
@@ -141,7 +173,7 @@ for (m_id in mlra_ids) {
       }
     }
   }
-
+  
   if (length(sim_results_list) > 0) {
     final_sim_df <- dplyr::bind_rows(sim_results_list)
     out_file <- file.path(OUTPUT_SIM_DIR, paste0("MLRA_", m_id, output_suffix))
@@ -277,12 +309,12 @@ library(tigris)
 options(tigris_use_cache = TRUE)
 
 plot_systematic_map <- function(
-  df,
-  grid_sf,
-  mlra_id,
-  sample_size = 400,
-  id_col = "id",
-  gpkg_path = NULL
+    df,
+    grid_sf,
+    mlra_id,
+    sample_size = 400,
+    id_col = "id",
+    gpkg_path = NULL
 ) {
   # 1. Filter CSV by Year
   if ("year" %in% names(df)) {
@@ -291,35 +323,31 @@ plot_systematic_map <- function(
   } else {
     plot_df <- df
   }
-
+  
   # 2. Filter Spatial Grid to ONLY the cells that actually exist in the CSV
   mlra_grid <- grid_sf %>%
     dplyr::filter(.data[[id_col]] %in% plot_df[[id_col]])
-
-  # 3. FORCE TRUE SPATIAL SORTING (Top-to-Bottom, Left-to-Right)
-  centroids <- sf::st_coordinates(sf::st_centroid(mlra_grid))
-  mlra_grid$X_coord <- centroids[, "X"]
-  mlra_grid$Y_coord <- centroids[, "Y"]
-
-  mlra_grid <- mlra_grid %>%
-    dplyr::arrange(desc(Y_coord), X_coord)
-
-  # 4. Determine Systematic Indices
+  
+  # 3. Determine Spatially Balanced Sample
   N_total <- nrow(mlra_grid)
+  
   if (sample_size >= N_total) {
     sampled_ids <- mlra_grid[[id_col]]
   } else {
-    k <- N_total / sample_size
-    set.seed(42)
-    start_idx <- runif(1, min = 1, max = k)
-    indices <- floor(start_idx + (0:(sample_size - 1)) * k)
-    indices[indices > N_total] <- N_total
-    indices[indices < 1] <- 1
-
-    sampled_ids <- mlra_grid[[id_col]][indices]
+    # Generate balanced points over the unioned geometry
+    set.seed(42) # Lock random offset for reproducible map generation
+    sampled_points <- sf::st_sample(
+      x = sf::st_union(mlra_grid), 
+      size = sample_size, 
+      type = "regular"
+    )
+    
+    # Intersect with polygons to extract IDs
+    intersecting_indices <- unlist(sf::st_intersects(sampled_points, mlra_grid))
+    sampled_ids <- mlra_grid[[id_col]][intersecting_indices]
   }
-
-  # 5. Assign plotting status
+  
+  # 4. Assign plotting status
   mlra_grid <- mlra_grid %>%
     dplyr::mutate(
       Sample_Status = dplyr::case_when(
@@ -327,20 +355,20 @@ plot_systematic_map <- function(
         TRUE ~ "Present in CSV Data"
       )
     )
-
+  
   mlra_grid$Sample_Status <- factor(
     mlra_grid$Sample_Status,
     levels = c("Present in CSV Data", "Systematically Selected")
   )
-
-  # 6. Generate the Map
+  
+  # 5. Generate the Map
   p <- ggplot()
-
+  
   # Draw MLRA background and State Line
   if (!is.null(gpkg_path) && file.exists(gpkg_path)) {
     mlra_bound <- sf::st_read(gpkg_path, quiet = TRUE) %>%
       dplyr::filter(MLRA_ID == mlra_id)
-
+    
     p <- p +
       geom_sf(
         data = mlra_bound,
@@ -348,7 +376,7 @@ plot_systematic_map <- function(
         color = "black",
         linewidth = 0.8
       )
-
+    
     # Fetch Nebraska State Line
     ne_state <- tigris::states(
       cb = TRUE,
@@ -357,16 +385,15 @@ plot_systematic_map <- function(
     ) %>%
       dplyr::filter(STUSPS == "NE") %>%
       sf::st_transform(sf::st_crs(mlra_bound))
-
-    # --- THE FIX: Convert POLYGON to MULTILINESTRING before cropping ---
+    
     ne_state_lines <- sf::st_cast(ne_state, "MULTILINESTRING")
-
+    
     # Physically crop the lines to the MLRA's bounding box
     ne_state_cropped <- suppressWarnings(sf::st_crop(
       ne_state_lines,
       sf::st_bbox(mlra_bound)
     ))
-
+    
     # Add the cropped state line on top
     p <- p +
       geom_sf(
@@ -378,7 +405,7 @@ plot_systematic_map <- function(
         alpha = 0.8
       )
   }
-
+  
   # Draw the Grid Cells
   p <- p +
     geom_sf(
@@ -400,7 +427,7 @@ plot_systematic_map <- function(
     ) +
     theme_minimal(base_size = 14) +
     labs(
-      title = paste("Systematic Grid Sampling - MLRA", mlra_id),
+      title = paste("Spatially Balanced Grid Sampling - MLRA", mlra_id),
       subtitle = paste(
         "Sample Size: N =",
         sample_size,
@@ -414,7 +441,7 @@ plot_systematic_map <- function(
       plot.title = element_text(face = "bold"),
       panel.grid.minor = element_blank()
     )
-
+  
   return(p)
 }
 # ==============================================================================
