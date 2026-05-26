@@ -80,7 +80,7 @@ determine_optimal_threshold <- function(req_df, stats_df, target_var, direction 
 
 # Load your datasets
 req_data <- read_csv("temp/sampleRequirementsNebraska.csv")
-stats_data <- read_csv("~/trueNAS/work/neymanSampling/data/derived/summaries_unet")
+stats_data <- read_csv("data/derived/summaries_unet/ALL_MLRA_UNET_summary_stats.csv")
 
 # Run the optimization for Forest (looking for values LESS THAN the threshold)
 forest_opt <- determine_optimal_threshold(
