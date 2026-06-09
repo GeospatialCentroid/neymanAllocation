@@ -7,12 +7,17 @@
 # ==============================================================================
 
 source("scripts/00_config.R")
-pacman::p_load("tmap","dplyr","sf","purrr","readr")
+source("src/sampleGridsFunctions.R")
+library(tmap)
+library(dplyr)
+library(sf)
+library(purrr)
+library(readr)
 
 # --- 1. SETUP & LOCAL PATHS ---------------------------------------------------
 # Define sampling parameters
 DRAW_SIZES <- c(500, 650, 1400) # Pass multiple draw sizes here
-TARGET_LLR <- "G"
+TARGET_LLR <- "H"
 
 message("Loading spatial inputs...")
 
@@ -146,12 +151,30 @@ message(paste(
   "MLRAs to process for sampling."
 ))
 
-# Environment tracking to hold the last processed dataset for QA step
+# Environment tracking to hold a dataset for the QA step
 last_sample_df <- NULL
 last_draw_size <- NULL
 
 # Iterate through each independent draw size
 for (current_draw_size in DRAW_SIZES) {
+  
+  # Programmatically generate export path first to verify if it exists
+  export_filename <- sprintf(
+    "selectedSample_lrr_%s_draw_%s_05_2026.csv", 
+    TARGET_LLR, 
+    current_draw_size
+  )
+  export_path <- file.path("data/products/systematicSampleSelection", export_filename)
+  
+  # Check if file already exists before executing processing heavy function
+  if (file.exists(export_path)) {
+    message(sprintf("\n[SKIPPING] Output file already exists for Draw Size %s: %s", current_draw_size, export_path))
+    
+    # Optional: Load the existing file to cache for the QA plot if it's the last run
+    last_sample_df <- readr::read_csv(export_path, show_col_types = FALSE)
+    last_draw_size <- current_draw_size
+    next
+  }
   
   message(paste("\n--- STARTING WORKFLOW FOR DRAW SIZE:", current_draw_size, "---"))
   
@@ -170,14 +193,6 @@ for (current_draw_size in DRAW_SIZES) {
   message(paste("Sampling complete for Draw Size", current_draw_size, "."))
   message(paste("Total grids sampled:", nrow(final_sample_df)))
   
-  # Programmatically generate export path based on LLR and Draw Size variables
-  export_filename <- sprintf(
-    "selectedSample_lrr_%s_draw_%s_05_2026.csv", 
-    TARGET_LLR, 
-    current_draw_size
-  )
-  export_path <- file.path("data/products/systematicSampleSelection", export_filename)
-  
   readr::write_csv(final_sample_df, export_path)
   message(paste("Exported dataset to:", export_path))
   
@@ -187,9 +202,9 @@ for (current_draw_size in DRAW_SIZES) {
 }
 
 # --- 4. VISUALIZATION QA/QC ---------------------------------------------------
-# Runs QA utilizing the final processed iteration from the loop above
+# Runs QA utilizing the final processed (or skipped/loaded) dataset
 
-test_mlra_id <- llr_target_ids[1]
+test_mlra_id <- 56
 
 if (test_mlra_id %in% llr_target_ids && !is.null(last_sample_df)) {
   message(sprintf("\nGenerating QA map for MLRA %s using Draw Size %s...", test_mlra_id, last_draw_size))
