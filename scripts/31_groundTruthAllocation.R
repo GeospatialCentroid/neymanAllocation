@@ -152,26 +152,64 @@ draw_balanced_spatial_sample <- function(available_pool, allocation_df, class_co
       if (k <= 0) next
       
       mlra_candidates <- candidates |> dplyr::filter(MLRA_ID == t_mlra)
-      
+      # kmeans appoarch 
+      # if (k >= nrow(mlra_candidates)) {
+      #   draw <- mlra_candidates
+      # } else {
+      #   coords <- mlra_candidates |> dplyr::select(x_cent, y_cent)
+      #   n_unique_coords <- nrow(unique(coords))
+      #   
+      #   # Check for overlapping/duplicate geometries to prevent kmeans failure
+      #   if (k >= n_unique_coords) {
+      #     draw <- mlra_candidates |> dplyr::slice_sample(n = k)
+      #   } else {
+      #     km <- kmeans(coords, centers = k, nstart = 25)
+      #     mlra_candidates$cluster <- km$cluster
+      #     
+      #     draw <- mlra_candidates |>
+      #       dplyr::group_by(cluster) |>
+      #       dplyr::slice_sample(n = 1) |>
+      #       dplyr::ungroup() |>
+      #       dplyr::select(-cluster)
+      #   }
+      # }
+      ## distributional along the lat long values 
       if (k >= nrow(mlra_candidates)) {
         draw <- mlra_candidates
       } else {
-        coords <- mlra_candidates |> dplyr::select(x_cent, y_cent)
-        n_unique_coords <- nrow(unique(coords))
+        # 1. Determine how many slices we need on each axis to get at least 'k' bins
+        grid_dim <- ceiling(sqrt(k))
         
-        # Check for overlapping/duplicate geometries to prevent kmeans failure
-        if (k >= n_unique_coords) {
-          draw <- mlra_candidates |> dplyr::slice_sample(n = k)
+        # 2. Use ntile to divide the X and Y distributions into equal percentiles
+        mlra_candidates <- mlra_candidates |>
+          dplyr::mutate(
+            x_bin = dplyr::ntile(x_cent, n = grid_dim),
+            y_bin = dplyr::ntile(y_cent, n = grid_dim),
+            spatial_bin = paste(x_bin, y_bin, sep = "_") # Create a unique ID for each intersection
+          )
+        
+        # 3. Randomly select 'k' unique bins from those that actually contain candidate sites
+        populated_bins <- unique(mlra_candidates$spatial_bin)
+        
+        # If we have more populated bins than we need, sample exactly k bins
+        if (length(populated_bins) > k) {
+          selected_bins <- sample(populated_bins, k)
         } else {
-          km <- kmeans(coords, centers = k, nstart = 10)
-          mlra_candidates$cluster <- km$cluster
-          
-          draw <- mlra_candidates |>
-            dplyr::group_by(cluster) |>
-            dplyr::slice_sample(n = 1) |>
-            dplyr::ungroup() |>
-            dplyr::select(-cluster)
+          # If the MLRA shape creates fewer populated bins than k, use them all
+          # and we will over-sample some bins to hit 'k'
+          selected_bins <- populated_bins
         }
+        
+        # 4. Draw sites based on the selected bins
+        draw <- mlra_candidates |>
+          dplyr::filter(spatial_bin %in% selected_bins) |>
+          dplyr::group_by(spatial_bin) |>
+          # If we have fewer bins than k, slice_sample needs to pull more than 1 from some bins
+          # We use a weight or simple slice to hit the exact k target
+          dplyr::slice_sample(n = ceiling(k / length(selected_bins))) |> 
+          dplyr::ungroup() |>
+          dplyr::slice_sample(n = k) |> # Final strict crop to ensure we return exactly k sites
+          dplyr::select(-x_bin, -y_bin, -spatial_bin)
       }
       
       selected_sites[[length(selected_sites) + 1]] <- draw
