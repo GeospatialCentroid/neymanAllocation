@@ -593,7 +593,7 @@ map <- map |>
   ) |>
   leaflet::hideGroup(scenario_names[-1]) 
 
-
+map
 # --- 6. QUANTITATIVE SUMMARY & PLOTTING ---------------------------------------
 message("\n--- Generating Comparison Metrics and Plots ---")
 
