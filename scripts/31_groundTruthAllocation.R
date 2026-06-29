@@ -32,28 +32,21 @@ metricsExport <- paste0("data/derived/metrics/nlcd_tcc_metrics_", TARGET_LLR, "_
 
 # --- 1. CORE FUNCTIONS --------------------------------------------------------
 
-#' Calculate Neyman Weights and Targets with a Baseline Minimum
+#' Calculate Neyman Weights with a Fixed Class-0 Minimum
 #' 
 #' @description Allocates a total sample size across strata based on the variance 
-#' within each stratum (Neyman allocation). Ensures every stratum receives a 
-#' guaranteed baseline number of samples before variance-based allocation occurs.
+#' within each stratum (Neyman allocation). If class 0 is present, it receives a
+#' fixed minimum first and the remaining sample budget is distributed across the
+#' remaining classes using Neyman weights.
 #'
 #' @param df A dataframe containing the population data.
 #' @param class_col A string representing the column name containing the stratification classes.
 #' @param var_col A string representing the column name of the continuous variable used to calculate variance.
 #' @param target_n Numeric. The total number of samples to allocate across all classes.
-#' @param baseline_per_class Numeric. The minimum number of samples guaranteed to each class. Default is 10.
+#' @param class_0_baseline Numeric. The minimum number of samples guaranteed to class 0. Default is 10.
 #'
 #' @return A summary dataframe containing the sample size targets (`target`) for each class.
-calc_neyman_with_baseline <- function(df, class_col, var_col, target_n, baseline_per_class = 10) {
-  
-  n_classes <- dplyr::n_distinct(df[[class_col]])
-  total_baseline <- baseline_per_class * n_classes
-  remaining_budget <- target_n - total_baseline
-  
-  if (remaining_budget < 0) {
-    stop("Baseline budget exceeds the total target sample size.")
-  }
+calc_neyman_with_baseline <- function(df, class_col, var_col, target_n, class_0_baseline = 10) {
   
   metrics <- df |>
     dplyr::group_by(!!rlang::sym(class_col)) |>
@@ -63,16 +56,42 @@ calc_neyman_with_baseline <- function(df, class_col, var_col, target_n, baseline
       .groups = "drop"
     ) |>
     dplyr::mutate(
-      S_h = ifelse(is.na(S_h) | S_h == 0, 0.001, S_h), # Prevent zero-variance collapse
+      S_h = ifelse(is.na(S_h) | S_h == 0, 0.001, S_h),
       weight = N_h * S_h,
-      neyman_portion = round(remaining_budget * (weight / sum(weight))),
-      target = baseline_per_class + neyman_portion
+      neyman_portion = 0,
+      target = 0
     )
+  
+  has_zero_class <- any(metrics[[class_col]] == 0)
+  n_non_zero_classes <- sum(metrics[[class_col]] != 0)
+  
+  if (has_zero_class && n_non_zero_classes == 0) {
+    metrics$target[metrics[[class_col]] == 0] <- target_n
+    return(metrics)
+  }
+  
+  fixed_baseline <- if (has_zero_class) class_0_baseline else 0
+  remaining_budget <- target_n - fixed_baseline
+  
+  if (remaining_budget < 0) {
+    stop("Class 0 baseline exceeds the total target sample size.")
+  }
+  
+  if (has_zero_class) {
+    metrics$target[metrics[[class_col]] == 0] <- class_0_baseline
+    neyman_idx <- metrics[[class_col]] != 0
+  } else {
+    neyman_idx <- rep(TRUE, nrow(metrics))
+  }
+  
+  neyman_weights <- metrics$weight[neyman_idx]
+  metrics$neyman_portion[neyman_idx] <- round(remaining_budget * (neyman_weights / sum(neyman_weights)))
+  metrics$target[neyman_idx] <- metrics$target[neyman_idx] + metrics$neyman_portion[neyman_idx]
   
   # Correct rounding disparities to enforce exact target_n
   diff <- target_n - sum(metrics$target)
   if (diff != 0) {
-    max_idx <- which.max(metrics$neyman_portion)
+    max_idx <- which(metrics[[class_col]] != 0)[which.max(metrics$neyman_portion[metrics[[class_col]] != 0])]
     metrics$target[max_idx] <- metrics$target[max_idx] + diff
   }
   
@@ -255,6 +274,74 @@ if (!file.exists(siteExport)) {
   sites_with_bbox <- readr::read_csv(siteExport, show_col_types = FALSE)
 }
 
+# --- 3. SPATIAL METRICS EXTRACTION (NLCD & TCC) -------------------------------
+message("\n--- Starting Parallel NLCD & TCC Extraction ---")
+
+extract_metrics_worker <- function(current_id, xmin, ymin, xmax, ymax, nlcd_paths, tcc_paths) {
+  require(terra, quietly = TRUE)
+  require(sf, quietly = TRUE)
+  
+  bbox_4326 <- sf::st_bbox(
+    c(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax),
+    crs = 4326
+  )
+  poly_4326 <- sf::st_as_sfc(bbox_4326)
+  
+  results <- data.frame(id = current_id, stringsAsFactors = FALSE)
+  target_years <- unique(c(names(nlcd_paths), names(tcc_paths)))
+  
+  for (year in target_years) {
+    n_path <- nlcd_paths[[year]]
+    t_path <- tcc_paths[[year]]
+    
+    if (!is.null(n_path) && !is.na(n_path) && file.exists(n_path)) {
+      r_nlcd <- terra::rast(n_path)
+      poly_native_n <- sf::st_transform(poly_4326, crs = terra::crs(r_nlcd))
+      vect_native_n <- terra::vect(poly_native_n)
+      
+      nlcd_cropped <- terra::crop(r_nlcd, vect_native_n, mask = TRUE)
+      freq_table <- terra::freq(nlcd_cropped)
+      
+      if (nrow(freq_table) == 0) {
+        results[[paste0("p_forest_", year)]] <- 0
+      } else {
+        forest_pixels <- sum(freq_table$count[freq_table$value %in% c(41, 42, 43)], na.rm = TRUE)
+        total_pixels <- sum(freq_table$count, na.rm = TRUE)
+        results[[paste0("p_forest_", year)]] <- (forest_pixels / total_pixels) * 100
+      }
+    } else {
+      results[[paste0("p_forest_", year)]] <- NA
+    }
+    
+    if (!is.null(t_path) && !is.na(t_path) && file.exists(t_path)) {
+      r_tcc <- terra::rast(t_path)
+      poly_native_t <- sf::st_transform(poly_4326, crs = terra::crs(r_tcc))
+      vect_native_t <- terra::vect(poly_native_t)
+      
+      tcc_cropped <- terra::crop(r_tcc, vect_native_t, mask = TRUE)
+      mean_tcc <- terra::global(tcc_cropped, "mean", na.rm = TRUE)[[1]]
+      results[[paste0("mean_tcc_", year)]] <- if (is.nan(mean_tcc)) 0 else mean_tcc
+    } else {
+      results[[paste0("mean_tcc_", year)]] <- NA
+    }
+  }
+  
+  return(results)
+}
+
+safe_metrics_worker <- purrr::possibly(
+  .f = extract_metrics_worker,
+  otherwise = function(current_id, ...) {
+    data.frame(
+      id = current_id,
+      p_forest_2010 = NA, p_forest_2016 = NA, p_forest_2020 = NA,
+      mean_tcc_2010 = NA, mean_tcc_2016 = NA, mean_tcc_2020 = NA,
+      stringsAsFactors = FALSE
+    )
+  },
+  quiet = FALSE
+)
+
 # Extract NLCD & TCC Metrics
 if (!file.exists(metricsExport)) {
   dir.create(dirname(metricsExport), recursive = TRUE, showWarnings = FALSE)
@@ -271,8 +358,9 @@ if (!file.exists(metricsExport)) {
     "2020" = nlcd_paths[grepl("tcc.*2020", nlcd_paths, ignore.case = TRUE)][1]
   )
   
-  future::plan(future::multisession, workers = max(1, future::availableCores() - 10))
-  tictoc::tic("Metrics Extraction Time")
+  workers <- max(1, future::availableCores() - 10)
+  future::plan(future::multisession, workers = workers)
+  tictoc::tic("Total Metrics Extraction Time")
   
   spatial_results <- furrr::future_pmap_dfr(
     list(current_id = sites_with_bbox$id, xmin = sites_with_bbox$xmin, ymin = sites_with_bbox$ymin, xmax = sites_with_bbox$xmax, ymax = sites_with_bbox$ymax),
@@ -286,157 +374,308 @@ if (!file.exists(metricsExport)) {
   
   final_sites <- sites_with_bbox |> dplyr::left_join(spatial_results, by = "id")
   readr::write_csv(final_sites, metricsExport)
+  message("NLCD and TCC metrics extraction complete.")
 } else {
   final_sites <- readr::read_csv(metricsExport, show_col_types = FALSE)
 }
 
 
-# --- 3. DYNAMIC STRATIFICATION ------------------------------------------------
-message("\n--- Calculating Dynamic Thresholds ---")
+# --- 3 & 4 & 5. FLEXIBLE SCENARIO GENERATION ----------------------------------
+message("\n--- Running Allocation Scenarios ---")
 
-# Define your target year for the sample
 target_year <- "2020"
 
-# Pivot dataset and isolate the single target year
+# Pivot dataset and isolate the target year
 long_sites <- final_sites |>
   tidyr::pivot_longer(
     cols = matches("p_forest_|mean_tcc_"),
     names_to = c(".value", "year"),
     names_pattern = "(.*)_(\\d{4})"
   ) |>
-  dplyr::filter(year == target_year) |>  # <-- Apply the temporal filter here
+  dplyr::filter(year == target_year) |>
   dplyr::mutate(site_year_id = paste(id, year, sep = "_")) |>
   dplyr::filter(!is.na(p_forest) & !is.na(mean_tcc))
 
-# Calculate optimal k-means breaks for forest cover > 0
-
-# Calculate optimal k-means breaks for forest cover > 0
-non_zero_forest <- long_sites |> dplyr::filter(p_forest > 0) |> dplyr::pull(p_forest)
-
-set.seed(2026) 
-km_res <- kmeans(non_zero_forest, centers = 4, nstart = 25)
-forest_breaks <- tapply(non_zero_forest, km_res$cluster, max) |> sort()
-
-t1 <- forest_breaks[1]
-t2 <- forest_breaks[2]
-t3 <- forest_breaks[3]
-
-message(sprintf("Calculated Forest Thresholds: 0, %.2f, %.2f, %.2f", t1, t2, t3))
-
-# Assign final classes
-classified_pop <- long_sites |>
-  dplyr::mutate(
-    tcc_class = dplyr::case_when(
-      mean_tcc == 0 ~ 0, mean_tcc > 0 & mean_tcc <= 10 ~ 1,
-      mean_tcc > 10 & mean_tcc <= 25 ~ 2, mean_tcc > 25 & mean_tcc <= 50 ~ 3,
-      mean_tcc > 50 ~ 4, TRUE ~ NA_real_
-    ),
-    forest_class = dplyr::case_when(
-      p_forest == 0 ~ 0, p_forest > 0 & p_forest <= t1 ~ 1,
-      p_forest > t1 & p_forest <= t2 ~ 2, p_forest > t2 & p_forest <= t3 ~ 3,
-      p_forest > t3 ~ 4, TRUE ~ NA_real_
+#' Run Allocation Scenario
+#' @param data The baseline long_sites dataframe.
+#' @param filter_col The column to apply exclusion thresholds against.
+#' @param threshold The maximum allowable value for the filter_col (e.g., 0, 20, 100). NA for no filter.
+#' @param stratify_col The column used to calculate Neyman variance and k-means breaks.
+run_allocation_scenario <- function(data, filter_col, threshold, stratify_col, target_n = TARGET_TOTAL_SAMPLE) {
+  
+  # 1. Apply Threshold Filters
+  if (!is.na(threshold)) {
+    pop_data <- data |> dplyr::filter(!!rlang::sym(filter_col) <= threshold)
+  } else {
+    pop_data <- data
+  }
+  
+  if (nrow(pop_data) == 0) {
+    warning("Filter resulted in 0 candidate sites.")
+    return(NULL)
+  }
+  
+  # 2. Check Variance for Stratification
+  var_val <- var(pop_data[[stratify_col]], na.rm = TRUE)
+  
+  if (is.na(var_val) || var_val == 0) {
+    message(sprintf("Zero variance in %s after filtering. Defaulting to single-class balanced draw.", stratify_col))
+    
+    classified_pop <- pop_data |> 
+      dplyr::mutate(scenario_class = ifelse(!!rlang::sym(stratify_col) == 0, 0, 1))
+    
+    alloc_targets <- data.frame(
+      scenario_class = unique(classified_pop$scenario_class),
+      target = target_n
     )
-  ) |>
-  dplyr::filter(!is.na(tcc_class) & !is.na(forest_class))
+    
+  } else {
+    # 3. Dynamic K-Means Breaks
+    non_zero_vals <- pop_data |> 
+      dplyr::filter(!!rlang::sym(stratify_col) > 0) |> 
+      dplyr::pull(!!rlang::sym(stratify_col))
+    
+    # Protect against too few unique values for k=4
+    k_centers <- min(4, length(unique(non_zero_vals))) 
+    
+    if (k_centers > 1) {
+      km_res <- kmeans(non_zero_vals, centers = k_centers, nstart = 25)
+      breaks <- tapply(non_zero_vals, km_res$cluster, max) |> sort()
+      
+      classified_pop <- pop_data |>
+        dplyr::mutate(
+          scenario_class = dplyr::case_when(
+            !!rlang::sym(stratify_col) == 0 ~ 0,
+            !!rlang::sym(stratify_col) > 0 & !!rlang::sym(stratify_col) <= breaks[1] ~ 1,
+            length(breaks) >= 2 & !!rlang::sym(stratify_col) > breaks[1] & !!rlang::sym(stratify_col) <= breaks[2] ~ 2,
+            length(breaks) >= 3 & !!rlang::sym(stratify_col) > breaks[2] & !!rlang::sym(stratify_col) <= breaks[3] ~ 3,
+            length(breaks) >= 4 & !!rlang::sym(stratify_col) > breaks[3] ~ 4,
+            TRUE ~ NA_real_
+          )
+        )
+    } else {
+      classified_pop <- pop_data |> 
+        dplyr::mutate(scenario_class = ifelse(!!rlang::sym(stratify_col) == 0, 0, 1))
+    }
+    
+    # 4. Neyman Allocation targets
+    alloc_targets <- tryCatch({
+      calc_neyman_with_baseline(classified_pop, "scenario_class", stratify_col, target_n, 10)
+    }, error = function(e) {
+      warning("Neyman baseline budget exceeded remaining filtered sites. Distributing equally.")
+      classes <- unique(classified_pop$scenario_class)
+      data.frame(scenario_class = classes, target = floor(target_n / length(classes)))
+    })
+  }
+  
+  # 5. Extract Sample using your existing spatial function
+  draw_balanced_spatial_sample(classified_pop, alloc_targets, "scenario_class")
+}
 
-
-# --- 4. ALLOCATION TARGETS ----------------------------------------------------
-# Define targets across the three sampling tracks
-alloc_neyman_forest <- calc_neyman_with_baseline(classified_pop, "forest_class", "p_forest", TARGET_TOTAL_SAMPLE, 10)
-alloc_neyman_tcc <- calc_neyman_with_baseline(classified_pop, "tcc_class", "mean_tcc", TARGET_TOTAL_SAMPLE, 10)
-alloc_equal_tcc <- data.frame(tcc_class = sort(unique(classified_pop$tcc_class)), target = TARGET_TOTAL_SAMPLE / 5)
-
-
-# --- 5. SAMPLE EXTRACTION -----------------------------------------------------
-message("\n--- Executing Sample Draws ---")
+# --- DEFINE & EXECUTE SCENARIOS ---
+# Define a grid of all the iterations you want to run
+scenarios <- tibble::tribble(
+  ~scenario_name,                ~filter_col,   ~threshold, ~stratify_col,
+  "base_neyman_forest",          NA,            NA,         "p_forest",
+  "base_neyman_tcc",             NA,            NA,         "mean_tcc",
+  "forest_max_0_strat_forest",   "p_forest",    0,          "p_forest",
+  "forest_max_20_strat_forest",  "p_forest",    20,         "p_forest",
+  "forest_max_50_strat_forest",  "p_forest",    50,         "p_forest",
+  "forest_max_100_strat_forest", "p_forest",    100,        "p_forest",
+  "tcc_max_0_strat_tcc",         "mean_tcc",    0,          "mean_tcc",
+  "tcc_max_20_strat_tcc",        "mean_tcc",    20,         "mean_tcc",
+  "tcc_max_50_strat_tcc",        "mean_tcc",    50,         "mean_tcc",
+  "tcc_max_100_strat_tcc",       "mean_tcc",    100,        "mean_tcc"
+)
 set.seed(2026)
+results_list <- purrr::pmap(scenarios, function(scenario_name, filter_col, threshold, stratify_col) {
+  message(paste("Running:", scenario_name))
+  result <- run_allocation_scenario(long_sites, filter_col, threshold, stratify_col, TARGET_TOTAL_SAMPLE)
+  
+  if (!is.null(result)) {
+    # Tag the resulting dataframe with the scenario name for easy tracking
+    result$scenario <- scenario_name 
+  }
+  return(result)
+})
 
-sample_neyman_forest <- draw_balanced_spatial_sample(classified_pop, alloc_neyman_forest, "forest_class")
-sample_neyman_tcc <- draw_balanced_spatial_sample(classified_pop, alloc_neyman_tcc, "tcc_class")
-sample_equal_tcc <- draw_balanced_spatial_sample(classified_pop, alloc_equal_tcc, "tcc_class")
+# Name the list elements for easy access (e.g., results_list$base_neyman_forest)
+# Apply Stratified Split (50/50)
+results_list <- purrr::map(results_list, function(df) {
+  if (!is.null(df)) {
+    tag_validation_splits(df, class_col = "scenario_class", val_fraction = 0.50)
+  }
+})
 
 
-# --- 6. EXPORT FINAL ALLOCATIONS ----------------------------------------------
+# --- 4. EXPORT DATA -----------------------------------------------------------
 message("\n--- Exporting Final Datasets ---")
 
-export_dir <- "data/products/groundTruthSamples"
+export_dir <- "data/products/groundTruthSamples/scenarios_2020"
 dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
 
-readr::write_csv(sample_neyman_forest, file.path(export_dir, "sample_neyman_forest_200.csv"))
-readr::write_csv(sample_neyman_tcc, file.path(export_dir, "sample_neyman_tcc_200.csv"))
-readr::write_csv(sample_equal_tcc, file.path(export_dir, "sample_equal_tcc_200.csv"))
+purrr::iwalk(results_list, function(df, name) {
+  if (!is.null(df)) {
+    readr::write_csv(df, file.path(export_dir, paste0(name, "_200.csv")))
+  }
+})
 
 
-# --- 7. LEAFLET MAP GENERATION ------------------------------------------------
+# --- 5. LEAFLET MAP GENERATION ------------------------------------------------
 message("\n--- Generating Leaflet Map ---")
 
-# Convert bounding box coordinates to sf point geometries
-sites_sf <- sample_neyman_forest |>
+all_sites <- dplyr::bind_rows(results_list) |>
   dplyr::mutate(lon = (xmin + xmax) / 2, lat = (ymin + ymax) / 2) |>
   sf::st_as_sf(coords = c("lon", "lat"), crs = 4326)
 
-# Load and prepare MLRA boundaries
 mlra_sf <- sf::st_read(lrr_id_path, quiet = TRUE) |> 
-  dplyr::filter(LRRSYM == "G") |>
+  dplyr::filter(LRRSYM == TARGET_LLR) |>
   sf::st_transform(4326)
 
-# Prep Custom HTML Info Panel
-class_descriptions <- c(
-  "0" = "0%", "1" = sprintf(">0 to %.1f%%", t1), "2" = sprintf(">%.1f to %.1f%%", t1, t2),
-  "3" = sprintf(">%.1f to %.1f%%", t2, t3), "4" = sprintf(">%.1f%%", t3)
-)
-
-summary_df <- data.frame(forest_class = as.numeric(names(class_descriptions)), desc = class_descriptions) |>
-  dplyr::left_join(sites_sf |> sf::st_drop_geometry() |> dplyr::count(forest_class), by = "forest_class") |>
-  dplyr::mutate(n = ifelse(is.na(n), 0, n))
-
-legend_rows <- paste0("<div style='margin-bottom: 6px;'><b>Class ", summary_df$forest_class, "</b> (", summary_df$desc, "): ", summary_df$n, " sites</div>")
-custom_html_panel <- paste0(
-  "<div style='background: white; padding: 16px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); font-size: 14px;'>",
-  "<div style='font-size: 16px; font-weight: bold; margin-bottom: 4px;'>Neyman Allocation Data</div>",
-  "<div style='font-style: italic; color: #555; margin-bottom: 12px;'>Forest Cover Thresholds</div>",
-  "<div style='border-top: 1px solid #ccc; margin-bottom: 12px;'></div>",
-  paste(legend_rows, collapse = ""),
-  "</div>"
-)
-
-# Color Palettes
-mlra_pal <- leaflet::colorFactor(palette = "Set3", domain = mlra_sf$MLRA_NAME)
 discrete_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00")
-pal <- leaflet::colorFactor(palette = discrete_colors, domain = sites_sf$forest_class)
+pal <- leaflet::colorFactor(palette = discrete_colors, domain = 0:4)
 
-# Generate Map Base
 map <- leaflet::leaflet() |>
-  leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron, group = "Light Map (Default)") |>
-  leaflet::addProviderTiles(leaflet::providers$Esri.WorldImagery, group = "Imagery (Satellite)") |>
+  leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron, group = "Light Map") |>
+  leaflet::addProviderTiles(leaflet::providers$Esri.WorldImagery, group = "Imagery") |>
   leaflet::addPolygons(
-    data = mlra_sf, color = "#444444", weight = 1, fillColor = ~mlra_pal(MLRA_NAME),
-    fillOpacity = 0.4, label = ~MLRA_NAME,
-    highlightOptions = leaflet::highlightOptions(weight = 3, color = "#000000", fillOpacity = 0.6, bringToFront = FALSE)
+    data = mlra_sf, color = "#444444", weight = 1, fillOpacity = 0.1, label = ~MLRA_NAME,
+    highlightOptions = leaflet::highlightOptions(weight = 3, color = "#000000", bringToFront = FALSE)
   )
 
-# Add Layered Markers for Toggling
-classes <- sort(unique(sites_sf$forest_class))
-for (cls in classes) {
-  class_data <- sites_sf |> dplyr::filter(forest_class == cls)
+scenario_names <- unique(all_sites$scenario)
+
+for (scen in scenario_names) {
+  scen_data <- all_sites |> dplyr::filter(scenario == scen)
+  val_data <- scen_data |> dplyr::filter(split_tag == "Validation")
+  
+  if (nrow(val_data) > 0) {
+    map <- map |>
+      leaflet::addCircleMarkers(
+        data = val_data, group = scen, radius = 8, color = "#222222", 
+        stroke = FALSE, fillOpacity = 0.85, options = leaflet::pathOptions(clickable = FALSE) 
+      )
+  }
+  
   map <- map |>
     leaflet::addCircleMarkers(
-      data = class_data, group = paste("Class", cls), radius = 5,
-      color = ~pal(forest_class), stroke = TRUE, weight = 1, fillOpacity = 0.9,
-      popup = ~paste0("<b>Site ID:</b> ", id, "<br><b>MLRA ID:</b> ", MLRA_ID, "<br><b>Forest Class:</b> ", forest_class, "<br><b>Year:</b> ", year),
-      label = ~paste("Class:", forest_class)
+      data = scen_data, group = scen, radius = 5, color = ~pal(scenario_class),
+      stroke = TRUE, weight = 1, fillOpacity = 0.9,
+      popup = ~paste0(
+        "<b>Site ID:</b> ", id, "<br><b>Split Tag:</b> ", split_tag, 
+        "<br><b>Class:</b> ", scenario_class,
+        "<br><b>Forest %:</b> ", round(p_forest, 2),
+        "<br><b>Mean TCC %:</b> ", round(mean_tcc, 2)
+      ),
+      label = ~paste0(split_tag, " - Class: ", scenario_class)
     )
 }
 
-# Add Controls and Legend
+shape_legend_html <- paste0(
+  "<div style='background: white; padding: 12px; border-radius: 4px; box-shadow: 0 0 10px rgba(0,0,0,0.1); font-size: 13px; font-family: sans-serif;'>",
+  "<b>Dataset Splits</b><br>",
+  "<div style='margin-top: 8px; display: flex; align-items: center;'>",
+  "<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:#888; border:1px solid #333; margin-right:8px;'></span> Training Site (50%)</div>",
+  "<div style='margin-top: 8px; display: flex; align-items: center;'>",
+  "<span style='display:inline-block; width:16px; height:16px; border-radius:50%; background:#222; display:flex; justify-content:center; align-items:center; margin-right:5px;'>",
+  "<span style='display:inline-block; width:10px; height:10px; border-radius:50%; background:#888; border:1px solid #333;'></span></span> Validation Site (50%)</div>",
+  "</div>"
+)
+
 map <- map |>
-  leaflet::addControl(html = custom_html_panel, position = "topright") |>
-  leaflet::addLegend(position = "bottomright", pal = pal, values = sites_sf$forest_class, title = "Forest Class", opacity = 1) |>
+  leaflet::addLegend(position = "bottomright", pal = pal, values = 0:4, title = "Allocation Class") |>
+  leaflet::addControl(html = shape_legend_html, position = "bottomleft") |>
   leaflet::addLayersControl(
-    baseGroups = c("Light Map (Default)", "Imagery (Satellite)"),
-    overlayGroups = paste("Class", classes),
+    baseGroups = c("Light Map", "Imagery"),
+    overlayGroups = scenario_names,
     options = leaflet::layersControlOptions(collapsed = FALSE),
     position = "topleft" 
+  ) |>
+  leaflet::hideGroup(scenario_names[-1]) 
+
+
+# --- 6. QUANTITATIVE SUMMARY & PLOTTING ---------------------------------------
+message("\n--- Generating Comparison Metrics and Plots ---")
+
+comparison_table <- all_sites |>
+  sf::st_drop_geometry() |>
+  dplyr::group_by(scenario) |>
+  dplyr::summarize(
+    total_sites_sampled = dplyr::n(),
+    unique_mlras_represented = dplyr::n_distinct(MLRA_ID),
+    mean_forest_sampled = mean(p_forest, na.rm = TRUE),
+    sd_forest_sampled = sd(p_forest, na.rm = TRUE),
+    mean_tcc_sampled = mean(mean_tcc, na.rm = TRUE),
+    sd_tcc_sampled = sd(mean_tcc, na.rm = TRUE),
+    class_0_count = sum(scenario_class == 0, na.rm = TRUE),
+    class_1_count = sum(scenario_class == 1, na.rm = TRUE),
+    class_2_count = sum(scenario_class == 2, na.rm = TRUE),
+    class_3_count = sum(scenario_class == 3, na.rm = TRUE),
+    class_4_count = sum(scenario_class == 4, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  dplyr::relocate(scenario, total_sites_sampled, unique_mlras_represented)
+
+readr::write_csv(comparison_table, file.path(export_dir, "scenario_comparison_summary.csv"))
+
+scenario_order <- c(
+  "base_neyman_forest",
+  "forest_max_100_strat_forest",
+  "forest_max_50_strat_forest",
+  "forest_max_20_strat_forest",
+  "forest_max_0_strat_forest",
+  "base_neyman_tcc",
+  "tcc_max_100_strat_tcc",
+  "tcc_max_50_strat_tcc",
+  "tcc_max_20_strat_tcc",
+  "tcc_max_0_strat_tcc"
+)
+
+plot1_data <- comparison_table |>
+  dplyr::mutate(
+    target_metric = ifelse(grepl("forest", scenario, ignore.case = TRUE), "Forest Cover (%)", "Tree Canopy Cover (%)"),
+    mean_val = ifelse(grepl("forest", scenario, ignore.case = TRUE), mean_forest_sampled, mean_tcc_sampled),
+    sd_val = ifelse(grepl("forest", scenario, ignore.case = TRUE), sd_forest_sampled, sd_tcc_sampled),
+    scenario = factor(scenario, levels = rev(scenario_order)) 
   )
 
-map
+p1 <- ggplot2::ggplot(plot1_data, ggplot2::aes(x = scenario, y = mean_val, fill = target_metric)) +
+  ggplot2::geom_col(color = "black", alpha = 0.8) +
+  ggplot2::geom_errorbar(ggplot2::aes(ymin = pmax(0, mean_val - sd_val), ymax = mean_val + sd_val), width = 0.2, alpha = 0.7) +
+  ggplot2::coord_flip() +
+  ggplot2::facet_wrap(~target_metric, scales = "free_x") +
+  ggplot2::scale_fill_manual(values = c("Forest Cover (%)" = "#2ca25f", "Tree Canopy Cover (%)" = "#2b8cbe")) +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(
+    title = "Mean and Standard Deviation of Targeted Cover Metric",
+    x = "Scenario", y = "Mean Cover % (± SD)"
+  ) +
+  ggplot2::theme(legend.position = "none")
+
+plot2_data <- comparison_table |>
+  dplyr::select(scenario, dplyr::starts_with("class_")) |>
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("class_"),
+    names_to = "allocation_class",
+    values_to = "count"
+  ) |>
+  dplyr::mutate(
+    allocation_class = gsub("class_|_count", "", allocation_class),
+    scenario = factor(scenario, levels = rev(scenario_order))
+  )
+
+p2 <- ggplot2::ggplot(plot2_data, ggplot2::aes(x = scenario, y = count, fill = allocation_class)) +
+  ggplot2::geom_col(position = "stack", color = "black", linewidth = 0.2) +
+  ggplot2::coord_flip() +
+  ggplot2::scale_fill_manual(values = c("0" = "#E41A1C", "1" = "#377EB8", "2" = "#4DAF4A", "3" = "#984EA3", "4" = "#FF7F00")) +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(
+    title = "Distribution of Sample Sites Across Allocation Classes",
+    x = "Scenario", y = "Number of Sites Drawn", fill = "Class"
+  )
+
+ggplot2::ggsave(file.path(export_dir, "plot_1_mean_sd_cover.png"), plot = p1, width = 10, height = 6, bg = "white")
+ggplot2::ggsave(file.path(export_dir, "plot_2_class_distribution.png"), plot = p2, width = 10, height = 6, bg = "white")
+
+p1
+p2
