@@ -243,6 +243,33 @@ draw_balanced_spatial_sample <- function(available_pool, allocation_df, class_co
   return(final_draw)
 }
 
+#' Tag Validation Splits (Stratified)
+#'
+#' @description Assigns a training or validation tag to rows in a dataframe, 
+#' ensuring that the split fraction is applied proportionally across each class.
+#'
+#' @param df A dataframe containing the sampled sites.
+#' @param class_col A string specifying the column with the stratification class.
+#' @param val_fraction Numeric value between 0 and 1 indicating the proportion of validation sites.
+#'
+#' @return The original dataframe with an appended `split_tag` column.
+tag_validation_splits <- function(df, class_col, val_fraction = 0.50) {
+  
+  df |>
+    dplyr::group_by(!!rlang::sym(class_col)) |>
+    dplyr::mutate(
+      # Determine the exact number of validation sites needed for this specific class
+      n_val = round(dplyr::n() * val_fraction),
+      
+      # Create a vector of exact length containing the required number of Validation/Training tags,
+      # then shuffle it using sample() so the tags are randomly assigned to the rows.
+      split_tag = sample(
+        c(rep("Validation", n_val[1]), 
+          rep("Training", dplyr::n() - n_val[1]))
+      )
+    ) |>
+    dplyr::ungroup()
+}
 
 # --- 2. BBOX GENERATION & METRICS EXTRACTION ----------------------------------
 message("\n--- Preparing Spatial Data & Metrics ---")
@@ -499,7 +526,6 @@ results_list <- purrr::pmap(scenarios, function(scenario_name, filter_col, thres
   return(result)
 })
 
-# Name the list elements for easy access (e.g., results_list$base_neyman_forest)
 # Apply Stratified Split (50/50)
 results_list <- purrr::map(results_list, function(df) {
   if (!is.null(df)) {
@@ -507,6 +533,9 @@ results_list <- purrr::map(results_list, function(df) {
   }
 })
 
+# Name the list elements using the scenario names from your tribble
+# This ensures purrr::iwalk uses the scenario name instead of the index number
+names(results_list) <- scenarios$scenario_name
 
 # --- 4. EXPORT DATA -----------------------------------------------------------
 message("\n--- Exporting Final Datasets ---")
@@ -514,11 +543,26 @@ message("\n--- Exporting Final Datasets ---")
 export_dir <- "data/products/groundTruthSamples/scenarios_2020"
 dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
 
+# 4a. Export individual scenario files
 purrr::iwalk(results_list, function(df, name) {
   if (!is.null(df)) {
+    # The dataframe already contains the 'scenario' column from line 302
     readr::write_csv(df, file.path(export_dir, paste0(name, "_200.csv")))
   }
 })
+
+# 4b. Combine all scenarios into a single data frame and export
+message("Combining all scenarios into a single dataset...")
+all_scenarios_df <- dplyr::bind_rows(results_list)
+
+combined_export_path <- file.path(export_dir, "all_scenarios_combined_200.csv")
+readr::write_csv(all_scenarios_df, combined_export_path)
+
+message(sprintf("Combined dataset exported to: %s", combined_export_path))
+
+
+# 
+
 
 
 # --- 5. LEAFLET MAP GENERATION ------------------------------------------------
