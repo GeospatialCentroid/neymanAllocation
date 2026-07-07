@@ -19,7 +19,7 @@ pacman::p_load(
 # Global Parameters
 TARGET_LLR <- "G"
 TARGET_SIZE <- 1400
-TARGET_TOTAL_SAMPLE <- 200
+TARGET_TOTAL_SAMPLE <- 100
 
 # File Paths
 lrr_id_path <- "data/derived/mlra/lower48MLRA.gpkg"
@@ -207,7 +207,7 @@ draw_balanced_spatial_sample <- function(available_pool, allocation_df, class_co
             spatial_bin = paste(x_bin, y_bin, sep = "_") # Create a unique ID for each intersection
           )
         
-        # 3. Randomly select 'k' unique bins from those that actually contain candidate sites
+        # 3. Randomly select 'k' unique bins from those thatactually contain candidate sites
         populated_bins <- unique(mlra_candidates$spatial_bin)
         
         # If we have more populated bins than we need, sample exactly k bins
@@ -462,8 +462,8 @@ run_allocation_scenario <- function(data, filter_col, threshold, stratify_col, t
       dplyr::filter(!!rlang::sym(stratify_col) > 0) |> 
       dplyr::pull(!!rlang::sym(stratify_col))
     
-    # Protect against too few unique values for k=4
-    k_centers <- min(4, length(unique(non_zero_vals))) 
+    # Protect against too few unique values for k=2
+    k_centers <- min(2, length(unique(non_zero_vals))) 
     
     if (k_centers > 1) {
       km_res <- kmeans(non_zero_vals, centers = k_centers, nstart = 25)
@@ -474,9 +474,7 @@ run_allocation_scenario <- function(data, filter_col, threshold, stratify_col, t
           scenario_class = dplyr::case_when(
             !!rlang::sym(stratify_col) == 0 ~ 0,
             !!rlang::sym(stratify_col) > 0 & !!rlang::sym(stratify_col) <= breaks[1] ~ 1,
-            length(breaks) >= 2 & !!rlang::sym(stratify_col) > breaks[1] & !!rlang::sym(stratify_col) <= breaks[2] ~ 2,
-            length(breaks) >= 3 & !!rlang::sym(stratify_col) > breaks[2] & !!rlang::sym(stratify_col) <= breaks[3] ~ 3,
-            length(breaks) >= 4 & !!rlang::sym(stratify_col) > breaks[3] ~ 4,
+            length(breaks) >= 2 & !!rlang::sym(stratify_col) > breaks[1] ~ 2,
             TRUE ~ NA_real_
           )
         )
@@ -526,10 +524,10 @@ results_list <- purrr::pmap(scenarios, function(scenario_name, filter_col, thres
   return(result)
 })
 
-# Apply Stratified Split (50/50)
+# Apply Stratified Split (60/40)
 results_list <- purrr::map(results_list, function(df) {
   if (!is.null(df)) {
-    tag_validation_splits(df, class_col = "scenario_class", val_fraction = 0.50)
+    tag_validation_splits(df, class_col = "scenario_class", val_fraction = 0.60)
   }
 })
 
@@ -544,10 +542,11 @@ export_dir <- "data/products/groundTruthSamples/scenarios_2020"
 dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
 
 # 4a. Export individual scenario files
+number_groups <- 3
 purrr::iwalk(results_list, function(df, name) {
   if (!is.null(df)) {
-    # The dataframe already contains the 'scenario' column from line 302
-    readr::write_csv(df, file.path(export_dir, paste0(name, "_200.csv")))
+    # Added _3 to denote the 3-class stratification"
+    readr::write_csv(df, file.path(export_dir, paste0(name, "_",TARGET_TOTAL_SAMPLE ,"_",number_groups,".csv")))
   }
 })
 
@@ -555,7 +554,8 @@ purrr::iwalk(results_list, function(df, name) {
 message("Combining all scenarios into a single dataset...")
 all_scenarios_df <- dplyr::bind_rows(results_list)
 
-combined_export_path <- file.path(export_dir, "all_scenarios_combined_200.csv")
+# Added _3 to the combined export path
+combined_export_path <- paste0(export_dir, "/all_scenarios_combined_200_",number_groups,".csv")
 readr::write_csv(all_scenarios_df, combined_export_path)
 
 message(sprintf("Combined dataset exported to: %s", combined_export_path))
@@ -723,3 +723,6 @@ ggplot2::ggsave(file.path(export_dir, "plot_2_class_distribution.png"), plot = p
 
 p1
 p2
+
+
+
