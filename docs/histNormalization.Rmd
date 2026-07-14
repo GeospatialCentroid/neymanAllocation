@@ -1,0 +1,63 @@
+---
+title: "histNormalization"
+output: html_document
+---
+
+Technical Briefing: Automated Multi-Temporal Radiometric Normalization for NAIP Imagery
+Executive Summary
+When conducting multi-temporal land-cover classification across different acquisition years, raw National Agriculture Imagery Program (NAIP) data introduces significant classifier instability. Because NAIP imagery is delivered as uncalibrated Digital Numbers (DNs) without absolute surface reflectance calibration, variations in atmospheric conditions (haze, water vapor), solar illumination angles, and contractor-specific post-processing (contrast stretches and color balancing) cause artificial shifts in pixel distributions over time.
+
+If left uncalibrated, machine learning classifiers misinterpret these global radiometric shifts as structural land-cover change. A pixel representing the exact same vegetation class in 2012 and 2019 may fall on opposite sides of a model's decision boundary simply because the entire 2012 histogram experienced an atmospheric offset.
+
+To resolve this without flattening legitimate phenological or structural changes across the landscape, we have implemented an Automated Consensus Histogram Specification pipeline. This methodology statistically evaluates multi-year image stacks, identifies severe radiometric outliers, and selectively remaps their spectral distributions to match a stable temporal baseline.
+
+1. Diagnostic Band Selection: What is Evaluated and Why
+Rather than evaluating all bands indiscriminately, the automated detection algorithm focuses on two diagnostic sentinels that capture the majority of radiometric variance in airborne imagery:
+
+The Blue Band (Atmospheric Sentinel): Short-wavelength light (400–500 nm) is highly susceptible to atmospheric Rayleigh and Mie scattering. A rightward shift or severe variance compression in the Blue band is the universal signature of atmospheric haze and uncorrected path radiance.
+
+The Near-Infrared (NIR) Band (Biomass Sentinel): The NIR band is the primary driver of vegetation indices (such as NDVI) and structural classification. It is highly sensitive to sensor calibration discrepancies and seasonal soil/canopy moisture differences across flight campaigns.
+
+By tracking distributional drift in the Blue and NIR bands, the algorithm reliably separates true atmospheric/sensor artifacts from localized land-cover changes. When a correction is triggered, all image bands (Red, Green, Blue, NIR) are remapped to preserve inter-band relational integrity.
+
+2. The Automated Trigger Logic: When is Correction Applied?
+A core design principle of this workflow is conditional execution. Normalization is not applied blindly to all images; forcing naturally diverse years to look identical can erase real landscape evolution. Instead, the pipeline uses a tri-temporal consensus algorithm powered by the non-parametric Kolmogorov-Smirnov (KS) test.
+
+For any given spatial grid containing three temporal acquisitions (e.g., 2012, 2015, and 2019), the pipeline executes the following logic:
+
+Step 1: Pairwise Distribution Scoring
+The algorithm draws a regular spatial sample from each year and calculates the KS D-statistic across every possible pair (Year 1 vs. 2, Year 1 vs. 3, Year 2 vs. 3). The D-statistic measures the maximum vertical distance between two Cumulative Distribution Functions (CDFs), ranging from 0.0 (identical distributions) to 1.0 (complete divergence).
+
+Step 2: Consensus Baseline Identification
+The algorithm sums the pairwise distances for each year to determine its overall deviation from the temporal stack:
+
+The two years sharing the lowest pairwise D-statistic are designated the Consensus Pair. They represent the radiometric baseline of the site.
+
+The year with the highest cumulative distance is designated the Candidate Outlier.
+
+Step 3: Dual-Gated Threshold Verification
+To prevent unnecessary data manipulation, the candidate outlier must fail two distinct statistical checks before the system modifies any pixel values:
+
+Absolute Drift Exceeds Tolerance (outlier_dist > KS_THRESHOLD): The average distance between the outlier and the consensus pair must exceed a baseline operational threshold (typically set to 0.15 or 0.20).
+
+Relative Drift Exceeds Baseline Variance (outlier_dist > 2 * consensus_dist): The outlier's divergence must be at least twice as severe as the natural variation observed between the two consensus years.
+
+If an image fails both checks (such as a 2012 acquisition exhibiting massive Blue-band haze while 2015 and 2019 remain stable), the correction is automatically triggered. If all three years exhibit high internal variance—indicating a site that has undergone massive physical land-cover transformation—the algorithm safely bypasses normalization and retains the raw radiometry.
+
+3. The Correction Mechanism: Empirical CDF Quantile Matching
+When an acquisition is flagged for normalization, the pipeline applies Empirical Histogram Specification using the most recent year in the consensus pair as the reference standard.
+
+Quantile Mapping: The algorithm calculates 1,000 probability percentiles (from 0.001 to 1.000) for both the outlier image and the reference image.
+
+Piecewise Linear Interpolation: For every pixel in the outlier image, the system identifies its exact percentile rank within its own degraded distribution, and reassigns it the radiometric value found at that exact same percentile in the reference distribution.
+
+This mathematical re-mapping reshapes the outlier's histogram to mirror the structural curve of the reference baseline. Most importantly, quantile matching preserves the relative spatial ranking of features across the landscape: dark water bodies remain the darkest pixels, dense forests maintain their relative vegetation gradient, and bright bare earth remains bright, but the global atmospheric offset and vendor contrast distortions are stripped away.
+
+Summary of Operational Benefits
+By implementing automated consensus normalization, our modeling pipeline achieves three critical improvements:
+
+Eliminates False Positives: Classifiers no longer mistake atmospheric haze or vendor color-stretches for physical land-cover transitions.
+
+Preserves Data Integrity: Clean, radiometrically stable time series are left entirely unaltered through conditional threshold gating.
+
+Standardizes Feature Engineering: Derived spectral indices (like NDVI) maintain consistent boundary thresholds across different flight years, enabling models trained on multi-year sample sets to converge faster and predict with higher spatial accuracy.

@@ -200,6 +200,6 @@ plots_max <- generate_comparison_plots(target_grid_max, naips, model_dir, "Highe
 
 print("Generating Middle Variance Plots...")
 # plots_mid <- generate_comparison_plots(target_grid_mid, naips, model_dir, "Middle")
-
+ 
 print("Generating Low Variance Plots...")
 # plots_min <- generate_comparison_plots(target_grid_min, naips, model_dir, "Lowest")
