@@ -1,0 +1,10 @@
+Reading layer `lower48MLRA' from data source 
+  `/home/dune/trueNAS/work/neymanSampling/data/derived/mlra/lower48MLRA.gpkg' 
+  using driver `GPKG'
+Simple feature collection with 221 features and 5 fields
+Geometry type: MULTIPOLYGON
+Dimension:     XY
+Bounding box:  xmin: -124.7332 ymin: 17.68204 xmax: -64.56671 ymax: 49.38437
+Geodetic CRS:  WGS 84
+Outputs not found or outdated. Setting up parallel processing...
+Running TOF grid calculation across 16 workers...

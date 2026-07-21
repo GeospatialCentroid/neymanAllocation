@@ -33,17 +33,28 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
   
   # 1. Raw NAIP for corrected year
   naip_unnorm_file <- list.files(
-    path = file.path(naip_directory, grid_id),
+    path = naip_directory,
     pattern = paste0("naip_.*", grid_id, "_", corr_yr, "\\.tif$"),
     full.names = TRUE,
+    recursive = TRUE,
+    ignore.case = TRUE
+  )[1]
+
+  # 1b. Raw NAIP for baseline year
+  naip_base_file <- list.files(
+    path = naip_directory,
+    pattern = paste0("naip_.*", grid_id, "_", base_yr, "\\.tif$"),
+    full.names = TRUE,
+    recursive = TRUE,
     ignore.case = TRUE
   )[1]
 
   # 2. ARD Normalized NAIP for corrected year
   naip_norm_file <- list.files(
-    path = file.path(ard_directory, grid_id),
+    path = ard_directory,
     pattern = paste0(grid_id, "_", corr_yr, "\\.tif$"),
     full.names = TRUE,
+    recursive = TRUE,
     ignore.case = TRUE
   )[1]
   
@@ -52,6 +63,7 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
     path = model_directory, 
     pattern = paste0(grid_id, "_", base_yr, "_pred\\.tif$"), 
     full.names = TRUE, 
+    recursive = TRUE,
     ignore.case = TRUE
   )[1]
   
@@ -60,6 +72,7 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
     path = model_directory, 
     pattern = paste0(grid_id, "_", corr_yr, "_pred_unnormalized\\.tif$"), 
     full.names = TRUE, 
+    recursive = TRUE,
     ignore.case = TRUE
   )[1]
   
@@ -67,16 +80,18 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
     path = model_directory, 
     pattern = paste0(grid_id, "_", corr_yr, "_pred_normalized\\.tif$"), 
     full.names = TRUE, 
+    recursive = TRUE,
     ignore.case = TRUE
   )[1]
   
   # --- SAFETY CHECK ---
   required_files <- list(
-    "NAIP Unnorm (2012)"  = naip_unnorm_file,
+    "NAIP Base (Baseline)" = naip_base_file,
+    "NAIP Unnorm (Corr)"  = naip_unnorm_file,
     "NAIP Norm (ARD)"     = naip_norm_file,
-    "Model Base (2016)"   = mod_base_file,
-    "Model Unnorm (2012)" = mod_corr_unnorm_file,
-    "Model Norm (2012)"   = mod_corr_norm_file
+    "Model Base"          = mod_base_file,
+    "Model Unnorm"        = mod_corr_unnorm_file,
+    "Model Norm"          = mod_corr_norm_file
   )
   
   for (name in names(required_files)) {
@@ -88,9 +103,11 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
   # ----------------------------------------------------------------------------
   # B. Load Rasters
   # ----------------------------------------------------------------------------
+  r_naip_base   <- terra::rast(naip_base_file)
   r_naip_unnorm <- terra::rast(naip_unnorm_file)
   r_naip_norm   <- terra::rast(naip_norm_file)
   
+  if (terra::nlyr(r_naip_base) >= 3)   names(r_naip_base)[1:3]   <- c("Red", "Green", "Blue")
   if (terra::nlyr(r_naip_unnorm) >= 3) names(r_naip_unnorm)[1:3] <- c("Red", "Green", "Blue")
   if (terra::nlyr(r_naip_norm) >= 3)   names(r_naip_norm)[1:3]   <- c("Red", "Green", "Blue")
   
@@ -102,13 +119,18 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
   # C. Spatial Alignment
   # ----------------------------------------------------------------------------
   # Load vector for specific AOI
-  active_aoi_path <- file.path(naip_directory, grid_id, paste0("aoi-", grid_id, ".gpkg"))
+  active_aoi_path <- list.files(
+    path = naip_directory,
+    pattern = paste0("aoi-", grid_id, "\\.gpkg$"),
+    full.names = TRUE,
+    recursive = TRUE
+  )[1]
   
-  if (!file.exists(active_aoi_path)) {
-    stop(paste("CRITICAL ERROR: Vector file not found for AOI ID:", grid_id, "at", active_aoi_path))
+  if (is.na(active_aoi_path) || !file.exists(active_aoi_path)) {
+    stop(paste("CRITICAL ERROR: Vector file not found for AOI ID:", grid_id, "under", naip_directory))
   }
   
-  active_aoi <- terra::vect(active_aoi_path)
+  active_aoi <- terra::vect(sf::st_read(active_aoi_path, quiet = TRUE))
   
   if (nrow(active_aoi) == 0) {
     stop(paste("CRITICAL ERROR: No boundary found in vector file for AOI ID:", grid_id))
@@ -121,7 +143,11 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
   r_mod_corr_unnorm <- terra::mask(terra::crop(r_mod_corr_unnorm, aoi_vect_model), aoi_vect_model)
   r_mod_corr_norm   <- terra::mask(terra::crop(r_mod_corr_norm, aoi_vect_model), aoi_vect_model)
   
-  # 2. Align NAIP Layers (Corrected Year)
+  # 2. Align NAIP Layers
+  aoi_vect_naip_base <- terra::project(active_aoi, terra::crs(r_naip_base))
+  r_naip_base_masked <- terra::mask(terra::crop(r_naip_base, aoi_vect_naip_base), aoi_vect_naip_base)
+  r_naip_base_aligned <- terra::project(r_naip_base_masked, r_mod_base, method = "bilinear")
+  
   aoi_vect_naip_unnorm <- terra::project(active_aoi, terra::crs(r_naip_unnorm))
   r_naip_unnorm_masked <- terra::mask(terra::crop(r_naip_unnorm, aoi_vect_naip_unnorm), aoi_vect_naip_unnorm)
   r_naip_unnorm_aligned <- terra::project(r_naip_unnorm_masked, r_mod_base, method = "bilinear")
@@ -149,6 +175,12 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
   # ----------------------------------------------------------------------------
   # E. Figure 1: NAIP RGB Comparison
   # ----------------------------------------------------------------------------
+  p_naip_base <- ggplot() +
+    geom_spatraster_rgb(data = r_naip_base_aligned) +
+    theme_minimal() +
+    labs(title = paste0("Baseline NAIP (", base_yr, ")")) +
+    theme(axis.text = element_blank(), axis.ticks = element_blank(), panel.grid = element_blank())
+
   p_naip_raw <- ggplot() +
     geom_spatraster_rgb(data = r_naip_unnorm_aligned) +
     theme_minimal() +
@@ -161,10 +193,10 @@ generate_dual_comparison_plots <- function(grid_id, base_yr, corr_yr, naip_direc
     labs(title = paste0("ARD Normalized NAIP (", corr_yr, ")")) +
     theme(axis.text = element_blank(), axis.ticks = element_blank(), panel.grid = element_blank())
   
-  fig_naip <- (p_naip_raw | p_naip_ard) +
+  fig_naip <- (p_naip_base | p_naip_raw | p_naip_ard) +
     patchwork::plot_annotation(
       title = paste0("Radiometric Harmonization: NAIP RGB Imagery | AOI: ", grid_id),
-      subtitle = paste0("Direct spatial comparison of raw versus histogram-normalized reflectance for ", corr_yr),
+      subtitle = paste0("Comparing baseline (", base_yr, ") with raw and ARD normalized reflectance for ", corr_yr),
       theme = theme(plot.title = element_text(face = "bold", size = 14), plot.subtitle = element_text(size = 11, color = "grey30"))
     )
   

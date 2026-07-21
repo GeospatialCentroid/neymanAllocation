@@ -10,6 +10,7 @@ pacman::p_load(dplyr, terra, sf, readr, furrr, future, stringr, tidyr, ggplot2, 
 mlras <- sf::st_read("data/derived/mlra/lower48MLRA.gpkg")
 
 # Directory with the imagery  
+
 naip_dir <- "/mnt/unraid_naip/LLR G/"
 naips <- list.dirs(naip_dir, recursive = FALSE, full.names = TRUE)
 
@@ -41,8 +42,37 @@ grid_differences <- individualSummary %>%
   ) %>%
   arrange(desc(area_diff))
 
+# quick visual of the distribution 
+# 2. Define the threshold point
+threshold_val <- 20
+
+# 3. Generate the histogram plot
+ggplot(grid_differences, aes(x = area_diff)) +
+  # Create histogram (adjust binwidth based on your full dataset size)
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white", alpha = 0.8) +
+  
+  # Add vertical line for the 20% difference point
+  geom_vline(xintercept = threshold_val, color = "firebrick", linetype = "dashed", linewidth = 1.2) +
+  
+  # Add a text annotation pointing out the threshold line
+  annotate("text", x = threshold_val + 2, y = Inf, label = "Over 20% Difference", 
+           color = "firebrick", vjust = 2, hjust = 0, fontface = "bold") +
+  
+  # Clean up labels and theme
+  labs(
+    title = "Distribution of Area Difference (area_diff)",
+    subtitle = "Dashed line indicates the 20% difference threshold",
+    x = "Area Difference",
+    y = "Record Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank()
+  )
+
 # Extract the three representative indexes
-max_idx <- 200
+max_idx <- 10
 min_idx <- nrow(grid_differences)
 mid_idx <- round(nrow(grid_differences) / 2)
 
@@ -61,7 +91,7 @@ cat("3. Lowest Variance Grid  [Row", min_idx, "]:", target_grid_min, "\n\n")
 generate_comparison_plots <- function(grid_id, naip_directory, model_directory, class_label) {
   
   # Find all NAIP files matching the target grid
-  target_files <- list.files(naip_directory, pattern = paste0(grid_id, ".*\\.tif$"), full.names = TRUE)
+  target_files <- list.files(naip_directory, pattern = paste0(grid_id, ".*\\.tif$"), full.names = TRUE, recursive = TRUE)
   naip_files <- target_files[!grepl(pattern = "modelOutputs", target_files)]
   
   if (length(naip_files) == 0) {
@@ -197,7 +227,7 @@ generate_comparison_plots <- function(grid_id, naip_directory, model_directory, 
 # ------------------------------------------------------------------------------
 print("Generating High Variance Plots...")
 plots_max <- generate_comparison_plots(target_grid_max, naips, model_dir, "Highest")
-
+plots_max
 print("Generating Middle Variance Plots...")
 # plots_mid <- generate_comparison_plots(target_grid_mid, naips, model_dir, "Middle")
  

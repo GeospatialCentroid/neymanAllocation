@@ -24,17 +24,28 @@ scenario_summary_path <- file.path(export_dir, "scenario_tof_summary.csv")
 
 if (file.exists(grid_stats_path)){
   grid_stats <- read_csv(grid_stats_path)
-}else{
-  message("Outputs not found. Setting up parallel processing...")
+  
+  # Check if the new 'normalization' column exists; if not, force a rerun
+  if (!"normalization" %in% colnames(grid_stats)) {
+    message("Old grid stats format detected. Forcing rerun...")
+    file.remove(grid_stats_path)
+    grid_stats_exists <- FALSE
+  } else {
+    grid_stats_exists <- TRUE
+  }
+} else {
+  grid_stats_exists <- FALSE
+}
+
+if (!grid_stats_exists) {
+  message("Outputs not found or outdated. Setting up parallel processing...")
   
   # Define the parallel plan. 
   # Leaving one core free prevents the system from locking up entirely during heavy loads.
-  n_cores <- parallel::detectCores() - 16
+  n_cores <- parallel::detectCores() - 20
   future::plan(future::multisession, workers = n_cores)
   
   message(sprintf("Running TOF grid calculation across %s workers...", n_cores))
-  
-  if(file.exists())
   
   # Generate the grid-level tibble using furrr
   grid_stats <- furrr::future_map_dfr(images, function(img_name) {
@@ -48,8 +59,16 @@ if (file.exists(grid_stats_path)){
     tof_area_raster <- r * cell_areas
     tof_area_val <- terra::global(tof_area_raster, "sum", na.rm = TRUE)[[1]]
     
+    # Identify normalization type
+    norm_type <- dplyr::case_when(
+      grepl("unnormalized", img_name) ~ "unnormalized",
+      grepl("normalized", img_name) ~ "normalized",
+      TRUE ~ "base"
+    )
+    
     tibble(
       grid_id = tools::file_path_sans_ext(img_name),
+      normalization = norm_type,
       grid_total_area = total_area_val,
       grid_tof_area = tof_area_val
     )
@@ -73,10 +92,9 @@ if (file.exists(grid_stats_path)){
   # 2. Split the grid_id and map the actual year to the target year
   grid_stats_clean <- grid_stats %>%
     tidyr::separate(col = grid_id, 
-                    into = c("id", "year", "suffix"), 
+                    into = c("id", "year"), 
                     sep = "_", 
                     extra = "drop") %>%
-    dplyr::select(-suffix) %>%
     # Ensure year is numeric for mapping
     dplyr::mutate(
       year = as.numeric(year),
@@ -99,7 +117,7 @@ if (file.exists(grid_stats_path)){
   message("Calculating scenario estimates per actual year...")
   
   scenario_year_estimates <- joined_data %>%
-    dplyr::group_by(scenario, year) %>%
+    dplyr::group_by(scenario, year, normalization) %>%
     dplyr::summarize(
       total_scenario_area = sum(grid_total_area, na.rm = TRUE),
       total_scenario_tof = sum(grid_tof_area, na.rm = TRUE),
@@ -116,7 +134,7 @@ if (file.exists(grid_stats_path)){
   scenario_target_year_estimates <- joined_data %>%
     # Filter out any records that didn't map to a target year (just in case)
     dplyr::filter(!is.na(target_year)) %>% 
-    dplyr::group_by(scenario, target_year) %>%
+    dplyr::group_by(scenario, target_year, normalization) %>%
     dplyr::summarize(
       total_scenario_area = sum(grid_total_area, na.rm = TRUE),
       total_scenario_tof = sum(grid_tof_area, na.rm = TRUE),
@@ -131,7 +149,7 @@ if (file.exists(grid_stats_path)){
   message("Calculating scenario estimates across all years...")
   
   scenario_combined_estimates <- joined_data %>%
-    dplyr::group_by(scenario) %>%
+    dplyr::group_by(scenario, normalization) %>%
     dplyr::summarize(
       total_scenario_area = sum(grid_total_area, na.rm = TRUE),
       total_scenario_tof = sum(grid_tof_area, na.rm = TRUE),
@@ -161,14 +179,15 @@ if (file.exists(grid_stats_path)){
     # Read the CSV data
     df <- read_csv(file_path, show_col_types = FALSE)
     
-    # Generate a horizontal bar chart ordered by TOF value
-    p <- ggplot(df, aes(x = reorder(scenario, area_weighted_tof), y = area_weighted_tof)) +
-      geom_col(fill = "steelblue") +
+    # Generate a horizontal bar chart ordered by TOF value, colored by normalization
+    p <- ggplot(df, aes(x = reorder(scenario, area_weighted_tof), y = area_weighted_tof, fill = normalization)) +
+      geom_col(position = "dodge") +
       coord_flip() + 
       labs(
-        title = "Area Weighted TOF by Scenario",
+        title = "Area Weighted TOF by Scenario & Normalization",
         x = "Scenario",
-        y = "Area Weighted TOF"
+        y = "Area Weighted TOF",
+        fill = "Normalization"
       ) +
       theme_minimal() +
       theme(
@@ -183,9 +202,12 @@ if (file.exists(grid_stats_path)){
     # Read the CSV data
     df <- read_csv(file_path, show_col_types = FALSE)
     
-    # Extract the baseline value
+    # Extract the baseline value (using 'base' normalization if available)
     baseline_value <- df %>% 
-      filter(scenario == baseline_scenario_name) %>% 
+      filter(scenario == baseline_scenario_name) %>%
+      # Prefer 'base' for baseline comparison
+      arrange(desc(normalization == "base")) %>%
+      slice(1) %>%
       pull(area_weighted_tof)
     
     if (length(baseline_value) == 0) {
@@ -198,12 +220,13 @@ if (file.exists(grid_stats_path)){
         tof_diff = area_weighted_tof - baseline_value,
         diff_type = ifelse(tof_diff > 0, "Increase", "Decrease")
       ) %>%
-      filter(scenario != baseline_scenario_name) # Optional: remove baseline from plot
+      filter(scenario != baseline_scenario_name) 
     
-    # Generate a diverging bar chart
+    # Generate a diverging bar chart, faceted by normalization
     p <- ggplot(df_diff, aes(x = reorder(scenario, tof_diff), y = tof_diff, fill = diff_type)) +
       geom_col() +
       coord_flip() +
+      facet_wrap(~normalization) +
       scale_fill_manual(values = c("Increase" = "darkgreen", "Decrease" = "darkred")) +
       labs(
         title = paste("Difference in Area Weighted TOF vs", baseline_scenario_name),
@@ -226,10 +249,11 @@ if (file.exists(grid_stats_path)){
     # Read the CSV data
     df <- read_csv(file_path, show_col_types = FALSE)
     
-    # Generate a line chart with points
+    # Generate a line chart with points, faceted by normalization
     p <- ggplot(df, aes(x = year, y = area_weighted_tof, color = scenario, group = scenario)) +
       geom_line(linewidth = 1) +
       geom_point(size = 2) +
+      facet_wrap(~normalization) +
       labs(
         title = "Area Weighted TOF Trends Over Time",
         x = "Year",
@@ -253,7 +277,7 @@ if (file.exists(grid_stats_path)){
     df <- read_csv(file_path, show_col_types = FALSE)
     
     # Ensure year is treated as a factor for clear faceting
-    df$year <- as.factor(df$target_year)
+    df$year_fact <- as.factor(df$target_year)
     
     # Define the exact desired order from top to bottom
     scenario_order <- c(
@@ -261,15 +285,15 @@ if (file.exists(grid_stats_path)){
       "forest_max_100_strat_forest",
       "forest_max_50_strat_forest",
       "forest_max_20_strat_forest",
-      "forest_max_0_strat_forest",   # Included based on earlier dataset
+      "forest_max_0_strat_forest",   
       "base_neyman_tcc",
       "tcc_max_100_strat_tcc",
       "tcc_max_50_strat_tcc",
       "tcc_max_20_strat_tcc",
-      "tcc_max_0_strat_tcc"          # Included for consistency
+      "tcc_max_0_strat_tcc"          
     )
     
-    # Identify scenarios that are actually in the dataset to avoid empty factor levels
+    # Identify scenarios that are actually in the dataset
     actual_scenarios <- unique(df$scenario)
     
     # Get the ordered ones that exist, and append any unexpected ones to the end
@@ -285,22 +309,21 @@ if (file.exists(grid_stats_path)){
     # Calculate the global maximum TOF to explicitly set the uniform axis limit
     max_tof <- max(df$area_weighted_tof, na.rm = TRUE)
     
-    # Generate a bar chart faceted by year
-    # Note: 'reorder(scenario, area_weighted_tof)' is replaced with just 'scenario'
-    p <- ggplot(df, aes(x = scenario, y = area_weighted_tof, fill = scenario)) +
-      geom_col() +
+    # Generate a bar chart faceted by year and normalization
+    p <- ggplot(df, aes(x = scenario, y = area_weighted_tof, fill = normalization)) +
+      geom_col(position = "dodge") +
       coord_flip() +
       # Lock the visual x-axis (mapped to y) to be exactly the same across all facets
       scale_y_continuous(limits = c(0, max_tof * 1.05)) + 
-      facet_wrap(~ year, scales = "fixed") + 
+      facet_wrap(~ year_fact, scales = "fixed") + 
       labs(
         title = "Area Weighted TOF by Scenario Across Years",
         x = "Scenario",
-        y = "Area Weighted TOF"
+        y = "Area Weighted TOF",
+        fill = "Normalization"
       ) +
       theme_minimal() +
       theme(
-        legend.position = "none", 
         axis.text.y = element_text(size = 6),
         strip.text = element_text(face = "bold")
       )
@@ -321,7 +344,12 @@ if (file.exists(grid_stats_path)){
   plot_1b <- plot_tof_difference(tof_combined, "base_neyman_forest")
   print(plot_1b)
   
-  # 2. Plot the faceted bar charts broken out by year
+  # 3. Plot the trend line chart
+  tof_actual_year <- file.path(export_dir, "scenario_tof_summary_actual_year.csv")
+  trend_plot <- plot_tof_trend(tof_actual_year)
+  print(trend_plot)
+  
+  # 4. Plot the faceted bar charts broken out by year
   faceted_plot <- plot_tof_faceted_by_year(tof_year)
   print(faceted_plot)
   
